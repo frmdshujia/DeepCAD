@@ -1,0 +1,66 @@
+# DeepCAD Stage I 训练配置文件
+
+# 数据配置
+data:
+  train_csv: "data/splits/train.csv"
+  val_csv: "data/splits/val.csv"
+  test_csv: "data/splits/test.csv"
+  retinal_base_path: "data/retinal"
+  mri_base_path: "data/mri"
+
+# 模型配置
+model:
+  # 视网膜编码器
+  retinal:
+    pretrained_path: null  # "RETFound_mae" 或本地路径
+    img_size: 224
+    freeze_backbone: false
+  
+  # MRI编码器
+  mri:
+    pretrained_path: null  # MedSAM检查点路径
+    img_size: 224
+    pooling_type: "attention"  # attention, learnable_weighted, mean, max
+    max_slices: 10
+    freeze_backbone: false
+  
+  # 投影头
+  projection:
+    latent_dim: 128
+    hidden_dim: null  # null表示使用编码器输出维度
+    num_layers: 2
+    use_bn: true
+    dropout: 0.0
+
+# 训练配置
+training:
+  batch_size: 32
+  num_epochs: 100
+  lr: 1e-4
+  weight_decay: 1e-5
+  temperature: 0.1
+  optimizer: "adam"  # adam, adamw, sgd
+  scheduler: "cosine"  # cosine, step, plateau, none
+  warmup_epochs: 5
+  freeze_encoders: false
+
+# 数据加载配置
+dataloader:
+  num_workers: 4
+  pin_memory: true
+  retinal_augmentation: "medium"  # light, medium, strong
+  mri_augmentation: "medium"  # light, medium, strong
+
+# 保存和日志配置
+logging:
+  save_dir: "checkpoints/stage1"
+  log_dir: "logs/stage1"
+  save_interval: 5  # 每N个epoch保存一次
+  log_interval: 10  # 每N个批次记录一次
+
+# 其他配置
+misc:
+  device: null  # null表示自动选择
+  seed: 42
+  resume_from: null  # 恢复训练的检查点路径
+
