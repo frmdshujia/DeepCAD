@@ -10,7 +10,7 @@ import torch.nn as nn
 from typing import Optional
 from functools import partial
 
-# 添加 RETFound 路径以便导入
+# 添加 RETFound 项目的源代码路径以便导入
 RETFOUND_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), 
                              'RETFound-main')
 if RETFOUND_PATH not in sys.path:
@@ -81,9 +81,13 @@ class RetinalEncoder(nn.Module):
         self.embed_dim = 1024
         self.global_pool = global_pool
         
-        # 加载预训练权重
-        if pretrained_path:
-            self.load_pretrained_weights(pretrained_path)
+        # 加载预训练权重（强制要求提供路径）
+        if pretrained_path is None:
+            raise ValueError(
+                "RetinalEncoder requires RETFound预训练权重。请通过 --retinal_pretrained "
+                "指定 HuggingFace Hub ID 或本地权重路径。"
+            )
+        self.load_pretrained_weights(pretrained_path)
         
         # 冻结骨干网络（如果需要）
         if freeze_backbone:
@@ -117,7 +121,7 @@ class RetinalEncoder(nn.Module):
         else:
             checkpoint_path = pretrained_path
         
-        # 加载检查点
+        # 加载检查点，只在加载权重时临时使用 CPU，训练时模型和数据都在 GPU 上
         checkpoint = torch.load(checkpoint_path, map_location='cpu')
         
         # 提取模型权重

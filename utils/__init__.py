@@ -5,6 +5,7 @@
 
 from .checkpoint import save_checkpoint, load_checkpoint
 from .logger import setup_logger
+from .feature_queue import FeatureQueue
 
-__all__ = ['save_checkpoint', 'load_checkpoint', 'setup_logger']
+__all__ = ['save_checkpoint', 'load_checkpoint', 'setup_logger', 'FeatureQueue']
 

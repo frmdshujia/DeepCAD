@@ -8,6 +8,8 @@ from .transforms import get_retinal_transforms, get_mri_transforms
 from .data_utils import (
     load_retinal_image,
     load_mri_slices,
+    load_ukb_cardiac_slices,
+    load_ukb_cardiac_with_t1,
     parse_mri_paths,
     load_mri_from_nifti
 )
@@ -19,6 +21,8 @@ __all__ = [
     'get_mri_transforms',
     'load_retinal_image',
     'load_mri_slices',
+    'load_ukb_cardiac_slices',
+    'load_ukb_cardiac_with_t1',
     'parse_mri_paths',
     'load_mri_from_nifti'
 ]

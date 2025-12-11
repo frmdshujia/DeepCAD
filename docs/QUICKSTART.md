@@ -17,11 +17,11 @@
 
 ```bash
 # 使用 conda
-conda create -n deepcad python=3.8
+conda create -n deepcad python=3.10
 conda activate deepcad
 
-# 或使用 venv
-python -m venv venv
+# 或使用 venv（确保系统已安装 Python 3.10）
+python3.10 -m venv venv
 source venv/bin/activate  # Linux/Mac
 # 或
 venv\Scripts\activate  # Windows

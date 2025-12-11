@@ -57,7 +57,7 @@ class ProjectionHead(nn.Module):
         # 第一层：input_dim -> hidden_dim
         layers.append(nn.Linear(input_dim, hidden_dim))
         if use_bn:
-            layers.append(nn.BatchNorm1d(hidden_dim))
+            layers.append(nn.BatchNorm1d(hidden_dim) if use_bn else nn.Identity())
         layers.append(nn.ReLU())
         if dropout > 0:
             layers.append(nn.Dropout(dropout))
@@ -66,7 +66,7 @@ class ProjectionHead(nn.Module):
         for _ in range(num_layers - 2):
             layers.append(nn.Linear(hidden_dim, hidden_dim))
             if use_bn:
-                layers.append(nn.BatchNorm1d(hidden_dim))
+                layers.append(nn.BatchNorm1d(hidden_dim) if use_bn else nn.Identity())
             layers.append(nn.ReLU())
             if dropout > 0:
                 layers.append(nn.Dropout(dropout))

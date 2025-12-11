@@ -3,3 +3,6 @@ subj_001,retinal_images/subj_001.jpg,mri_data/subj_001_cine.nii.gz,1
 subj_002,retinal_images/subj_002.png,"mri_data/subj_002_cine.nii.gz,mri_data/subj_002_t1.nii.gz",0
 subj_003,retinal_images/subj_003.jpg,"[\"mri_data/subj_003_slice1.nii.gz\", \"mri_data/subj_003_slice2.nii.gz\"]",1
 
+
+
+

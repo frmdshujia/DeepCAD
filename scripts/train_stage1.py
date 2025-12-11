@@ -31,21 +31,35 @@ def parse_args():
                        help='验证集CSV路径（可选）')
     parser.add_argument('--test_csv', type=str, default=None,
                        help='测试集CSV路径（可选）')
+    parser.add_argument('--subject_column', type=str, default='subject_id',
+                       help='CSV中受试者ID列名')
+    parser.add_argument('--retinal_column', type=str, default='retinal_path',
+                       help='CSV中视网膜图像路径列名（可为单路径或列表字符串）')
+    parser.add_argument('--mri_paths_column', type=str, default='mri_paths',
+                       help='CSV中心脏MRI路径列名（可为单路径或列表字符串；当未使用独立npy列时生效）')
+    parser.add_argument('--label_column', type=str, default='label',
+                       help='CSV中CAD标签列名')
+    parser.add_argument('--grade_column', type=str, default=None,
+                       help='CSV中疾病严重程度列名（可选）')
+    parser.add_argument('--t1map_npy_column', type=str, default=None,
+                       help='CSV中T1MAP序列npy路径列名（例如 T1MAP_B1B2B3_npy，可选）')
+    parser.add_argument('--short_axis_npy_column', type=str, default=None,
+                       help='CSV中短轴序列npy路径列名（例如 short_axis_ED_mid_ES_npy，可选）')
     parser.add_argument('--retinal_base_path', type=str, default=None,
                        help='视网膜图像基础路径')
     parser.add_argument('--mri_base_path', type=str, default=None,
                        help='MRI数据基础路径')
     
     # 模型参数
-    parser.add_argument('--retinal_pretrained', type=str, default=None,
-                       help='RETFound预训练权重路径（可选，HuggingFace Hub ID或本地路径）')
-    parser.add_argument('--mri_pretrained', type=str, default=None,
-                       help='MedSAM预训练权重路径（可选）')
+    parser.add_argument('--retinal_pretrained', type=str, required=True,
+                       help='RETFound预训练权重路径（必填，可为HuggingFace Hub ID或本地路径）')
+    parser.add_argument('--mri_pretrained', type=str, required=True,
+                       help='MedSAM预训练权重路径（必填）')
     parser.add_argument('--retinal_img_size', type=int, default=224,
                        help='视网膜图像尺寸')
     parser.add_argument('--mri_img_size', type=int, default=224,
                        help='MRI图像尺寸')
-    parser.add_argument('--max_mri_slices', type=int, default=10,
+    parser.add_argument('--max_mri_slices', type=int, default=6,
                        help='最大MRI切片数量')
     parser.add_argument('--mri_pooling_type', type=str, default='attention',
                        choices=['attention', 'learnable_weighted', 'mean', 'max'],
@@ -59,13 +73,23 @@ def parse_args():
     
     # 训练参数
     parser.add_argument('--batch_size', type=int, default=32,
-                       help='批次大小')
+                       help='批次大小') # batch 越大，负样本越多，对比信号越丰富
     parser.add_argument('--num_epochs', type=int, default=100,
                        help='训练轮数')
     parser.add_argument('--lr', type=float, default=1e-4,
                        help='学习率')
+    '''
+    对 ViT/大模型微调来说：
+    1e-5 是非常常见、比较“温和”的正则强度。如果你完全从零训练，可能会用到 1e-4 或更大；
+    这里是用大规模预训练模型（RETFound + MedSAM），1e-5 很合适。
+    '''
     parser.add_argument('--weight_decay', type=float, default=1e-5,
                        help='权重衰减')
+    '''
+    先用 0.1；如果发现：
+    loss 很难降、梯度爆炸或训练不稳定，可以试稍微大一点：0.15 ~ 0.2。
+    loss 能降，但对对齐效果不满意，可以试 0.07 或 0.05，更强调区分度。
+    '''
     parser.add_argument('--temperature', type=float, default=0.1,
                        help='对比损失温度参数')
     parser.add_argument('--optimizer', type=str, default='adam',
@@ -74,16 +98,25 @@ def parse_args():
     parser.add_argument('--scheduler', type=str, default='cosine',
                        choices=['cosine', 'step', 'plateau', 'none'],
                        help='学习率调度器类型')
+    '''
+    当前代码中还没有真正用到（create_scheduler 里没有处理 warmup）
+    '''
     parser.add_argument('--warmup_epochs', type=int, default=5,
                        help='预热轮数（用于cosine调度器）')
     parser.add_argument('--freeze_encoders', action='store_true',
                        help='冻结编码器参数（只训练投影头）')
+    parser.add_argument('--training_mode', type=str, default='grade',
+                       choices=['subject', 'grade', 'mixed', 'mixed_clinical'],
+                       help='训练模式选择')
     
     # 数据加载参数
     parser.add_argument('--num_workers', type=int, default=4,
                        help='数据加载器工作进程数')
-    parser.add_argument('--pin_memory', action='store_true', default=True,
-                       help='是否固定内存')
+    parser.add_argument('--pin_memory', dest='pin_memory', action='store_true',
+                       help='启用 DataLoader 的固定内存')
+    parser.add_argument('--no_pin_memory', dest='pin_memory', action='store_false',
+                       help='禁用 DataLoader 的固定内存')
+    parser.set_defaults(pin_memory=True)
     parser.add_argument('--retinal_augmentation', type=str, default='medium',
                        choices=['light', 'medium', 'strong'],
                        help='视网膜图像增强强度')
@@ -108,6 +141,14 @@ def parse_args():
                        help='设备（cuda/cpu，默认自动选择）')
     parser.add_argument('--seed', type=int, default=42,
                        help='随机种子')
+    # 梯度累积
+    parser.add_argument('--grad_accum_steps', type=int, default=1,
+                       help='梯度累积步数（>1 时，相当于放大等效 batch size）')
+    # memory bank / 队列负样本
+    parser.add_argument('--use_queue', action='store_true',
+                       help='是否启用 memory bank / 队列负样本扩展')
+    parser.add_argument('--queue_size', type=int, default=16384,
+                       help='memory bank 队列长度（负样本容量 K）')
     
     return parser.parse_args()
 
@@ -194,7 +235,14 @@ def main():
         max_mri_slices=args.max_mri_slices,
         live_loading=True,
         retinal_base_path=args.retinal_base_path,
-        mri_base_path=args.mri_base_path
+        mri_base_path=args.mri_base_path,
+        subject_column=args.subject_column,
+        retinal_column=args.retinal_column,
+        mri_paths_column=args.mri_paths_column,
+        label_column=args.label_column,
+        grade_column=args.grade_column,
+        t1map_npy_column=args.t1map_npy_column,
+        short_axis_npy_column=args.short_axis_npy_column
     )
     
     print(f"训练集: {len(train_loader.dataset)} 样本")
@@ -227,8 +275,11 @@ def main():
     print(f"可训练参数数量: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
     print()
     
-    # 创建损失函数
-    criterion = CrossModalContrastiveLoss(tau=args.temperature)
+    # 创建损失函数（正样本定义与 training_mode 绑定）
+    criterion = CrossModalContrastiveLoss(
+        tau=args.temperature,
+        training_mode=args.training_mode
+    )
     
     # 创建优化器
     optimizer = create_optimizer(model, args)
@@ -248,7 +299,12 @@ def main():
         log_dir=args.log_dir,
         save_dir=args.save_dir,
         log_interval=args.log_interval,
-        save_interval=args.save_interval
+        save_interval=args.save_interval,
+        training_mode=args.training_mode,
+        use_amp=True,
+        grad_accum_steps=args.grad_accum_steps,
+        use_queue=args.use_queue,
+        queue_size=args.queue_size,
     )
     
     # 开始训练

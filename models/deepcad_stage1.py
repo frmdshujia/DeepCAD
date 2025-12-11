@@ -78,6 +78,7 @@ class DeepCADStageI(nn.Module):
         # 来源: RETFound ViT-Large (参考 retinal_encoder.py 中的注释)
         # 参考: RETFound-main/models_vit.py 的 RETFound_mae() 函数
         retinal_embed_dim = self.retinal_encoder.get_embed_dim()  # 1024
+        self.retinal_embed_dim = retinal_embed_dim
         
         # 心脏MRI编码器
         if mri_encoder is None:
@@ -159,10 +160,25 @@ class DeepCADStageI(nn.Module):
                 - 'z_C': MRI投影 (batch_size, latent_dim)，已L2归一化
                       维度来源: 投影头输出，默认 128，与 z_R 相同以形成共享空间
         """
-        # 编码阶段
-        # 视网膜编码器输出: (B, 1024)
-        # 维度 1024 来自 RETFound ViT-Large 架构 (参考 retinal_encoder.py)
-        h_R = self.retinal_encoder(x_R)  # (B, 1024)
+        # 编码阶段 - 视网膜
+        # 支持两种输入形式：
+        # 1) 单视图: x_R 形状为 (B, 3, H, W)
+        # 2) 多视图: x_R 形状为 (B, num_retinal, 3, H, W)，例如同一受试者的多张眼底
+        #    我们会对每张眼底独立编码，然后对特征在视图维度做平均池化，得到主体级嵌入
+        if x_R.dim() == 4:
+            # 单视图 (B, 3, H, W)
+            h_R = self.retinal_encoder(x_R)  # (B, 1024)
+        elif x_R.dim() == 5:
+            # 多视图 (B, num_retinal, 3, H, W)
+            B, V, C, H, W = x_R.shape
+            x_R_flat = x_R.view(B * V, C, H, W)  # (B*V, 3, H, W)
+            h_R_views = self.retinal_encoder(x_R_flat)  # (B*V, 1024)
+            h_R_views = h_R_views.view(B, V, self.retinal_embed_dim)  # (B, V, 1024)
+            # 简单平均池化得到主体级视网膜嵌入 (B, 1024)
+            # 如需更复杂的池化（注意力等），可在此处替换
+            h_R = h_R_views.mean(dim=1)
+        else:
+            raise ValueError(f"Unexpected x_R shape: {x_R.shape}")
         
         # MRI编码器输出: (B, 768)
         # 维度 768 是 MedSAM ViT-Base 投影后的维度 (参考 mri_encoder.py)

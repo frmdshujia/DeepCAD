@@ -54,29 +54,37 @@ class MRICardioEncoder(nn.Module):
         
         if not MEDSAM_AVAILABLE:
             raise ImportError(
-                "MedSAM not available. Please ensure MedSAM-main is accessible. "
-                "You may need to install it or add it to your path."
+                "MedSAM not available. Please ensure MedSAM-main is accessible and its "
+                "Python dependencies are installed (see docs/ENVIRONMENT_SETUP.md)."
             )
         
-        # 构建 MedSAM ViT-Base 图像编码器
-        # 注意：MedSAM 使用 1024x1024 输入，但我们可以适配
-        if pretrained_path:
-            # 如果提供了检查点路径，使用 sam_model_registry 加载完整模型
-            # 然后只提取 image_encoder
-            try:
-                sam_model = sam_model_registry["vit_b"](checkpoint=pretrained_path)
-                self.backbone = sam_model.image_encoder
-                print(f"Loaded MedSAM pretrained weights from: {pretrained_path}")
-            except Exception as e:
-                print(f"Warning: Could not load from checkpoint {pretrained_path}: {e}")
-                print("Initializing MedSAM ViT-Base from scratch...")
-                sam_model = build_sam_vit_b(checkpoint=None)
-                self.backbone = sam_model.image_encoder
-        else:
-            # 从头初始化
-            sam_model = build_sam_vit_b(checkpoint=None)
-            self.backbone = sam_model.image_encoder
+        if pretrained_path is None:
+            raise ValueError(
+                "MRICardioEncoder requires a MedSAM ViT-B checkpoint. "
+                "Please download the official `medsam_vit_b.pth` (e.g. from "
+                "https://github.com/bowang-lab/MedSAM) and pass the local path via "
+                "`--mri_pretrained /path/to/medsam_vit_b.pth`."
+            )
         
+        if not os.path.isfile(pretrained_path):
+            raise FileNotFoundError(
+                f"MedSAM checkpoint not found: {pretrained_path}. "
+                "Verify the path or download the weights (medsam_vit_b.pth) and "
+                "provide the absolute path."
+            )
+        
+        try:
+            sam_model = sam_model_registry["vit_b"](checkpoint=pretrained_path)
+            self.backbone = sam_model.image_encoder
+            print(f"Loaded MedSAM pretrained weights from: {pretrained_path}")
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to load MedSAM checkpoint from {pretrained_path}. "
+                "Ensure the file is a valid ViT-B MedSAM weight file (medsam_vit_b.pth). "
+                f"Original error: {exc}"
+            ) from exc
+        
+
         # MedSAM ViT-Base 的输出通道数（out_chans）
         # 维度: 256
         # 来源: MedSAM-main/segment_anything/build_sam.py 中的 _build_sam() 函数
@@ -170,7 +178,7 @@ class MRICardioEncoder(nn.Module):
         #       image_size = 1024 (这是 SAM/MedSAM 架构的标准输入尺寸)
         # 说明: 虽然我们的数据可能是 224x224，但 MedSAM 编码器期望 1024x1024 输入
         #       因此需要上采样（使用双线性插值）
-        # 注意: 如果输入已经是 224x224，我们需要上采样
+        # 注意: 如果输入已经是 224x224，我们需要上采样，不直接使用1024作为输入是为了兼容内存有限的GPU
         if x.shape[-1] != 1024:
             x = nn.functional.interpolate(
                 x, size=(1024, 1024), mode='bilinear', align_corners=False
