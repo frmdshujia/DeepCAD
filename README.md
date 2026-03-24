@@ -4,6 +4,9 @@ DeepCAD is a cross-modal contrastive learning project that learns a **shared lat
 Stage I focuses on **supervised cross-modal contrastive pretraining** to align retina and CMR at the **subject / label / grade** level, and to support cross-modal interpretability (e.g., Grad-CAM on retina aligned with cardiac MRI features).
 
 ---
+## Online Demo
+A web-based demo for testing the model is available at: http://1.13.171.98:8080/
+
 
 ## Project Structure
 
