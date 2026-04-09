@@ -6,7 +6,8 @@
 #   bash contrastive_pretrain/run_contrast.sh
 #
 # 环境：默认使用 retfound conda 的 Python（与 requirement.txt 一致）。
-#       可覆盖：export PYTHON=/path/to/python
+#
+# OOM 时可调环境变量再跑：export BATCH_SIZE=8 CMR_SAMPLE_K=1024 BLR=8e-5
 # ============================================================
 
 set -euo pipefail
@@ -33,10 +34,19 @@ SIGMA=6.5893
 
 FINETUNE="${REPO_ROOT}/RETFound_cfp_weights.pth"
 
+# ─── 显存：每卡 batch 与 CMR 负样本数 K（K 越大越吃显存）────────────────
+# 原 64×4 + K=4096 易 OOM；默认改为 16×4 + K=2048，并用 blr 保持 top lr≈1e-5
+BATCH_SIZE="${BATCH_SIZE:-16}"
+CMR_SAMPLE_K="${CMR_SAMPLE_K:-2048}"
+# eff_bs=batch×卡数；lr = blr × eff_bs / 256。要 eff=64 且 lr≈1e-5 → blr≈4e-5
+BLR="${BLR:-4e-5}"
+NUM_WORKERS="${NUM_WORKERS:-4}"
+
 # ─── GPU（默认 4 卡）──────────────────────────────────────────
 GPU_IDS="${GPU_IDS:-0,1,2,3}"
 export CUDA_VISIBLE_DEVICES="${GPU_IDS}"
 N_GPU=$(echo "${GPU_IDS}" | tr ',' '\n' | grep -c . || true)
+EFF_BS=$(( BATCH_SIZE * N_GPU ))
 
 # ─── 输出 ────────────────────────────────────────────────────
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
@@ -46,7 +56,8 @@ mkdir -p "${OUTPUT_DIR}" "${LOG_DIR}"
 
 echo "=============================================="
 echo "  对比学习预训练 | 工作目录: ${REPO_ROOT}"
-echo "  GPU: ${GPU_IDS} (×${N_GPU})"
+echo "  GPU: ${GPU_IDS} (×${N_GPU})  |  eff_bs=${EFF_BS}  batch/GPU=${BATCH_SIZE}  K=${CMR_SAMPLE_K}"
+echo "  blr=${BLR} (lr ≈ blr×eff_bs/256)"
 echo "  Output: ${OUTPUT_DIR}"
 echo "  Sigma: ${SIGMA}"
 echo "  Python: ${PYTHON}"
@@ -61,11 +72,11 @@ ARGS=(
   --finetune      "${FINETUNE}"
   --proj_dim      256
   --temperature   0.07
-  --cmr_sample_k  4096
-  --batch_size    64
+  --cmr_sample_k  "${CMR_SAMPLE_K}"
+  --batch_size    "${BATCH_SIZE}"
   --epochs        100
   --warmup_epochs 10
-  --blr           1e-5
+  --blr           "${BLR}"
   --min_lr        1e-7
   --weight_decay  0.05
   --layer_decay   0.75
@@ -77,7 +88,7 @@ ARGS=(
   --save_freq     10
   --output_dir    "${OUTPUT_DIR}"
   --log_dir       "${LOG_DIR}"
-  --num_workers   8
+  --num_workers   "${NUM_WORKERS}"
   --gpu           "${GPU_IDS}"
   --desc          "run_${TIMESTAMP}"
 )
