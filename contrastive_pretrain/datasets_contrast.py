@@ -25,7 +25,21 @@ class FundusContrastDataset(Dataset):
     验证/测试时只做 Resize + CenterCrop。
     """
 
-    def __init__(self, csv_path: str, pc_cols: list, split: str = 'train'):
+    def __init__(
+        self,
+        csv_path: str,
+        pc_cols: list,
+        split: str = 'train',
+        train_subset_ratio: float = 1.0,
+        train_max_samples: int = 0,
+        subset_seed: int = 0,
+    ):
+        """
+        train_subset_ratio / train_max_samples / subset_seed 仅当 split=='train' 时生效：
+          - train_max_samples > 0 时优先：随机最多保留这么多行；
+          - 否则若 train_subset_ratio < 1.0：按比例随机子采样。
+        验证/测试集默认始终全量（便于稳定监控）。
+        """
         df = pd.read_csv(csv_path)
         df = df[df['split'] == split].reset_index(drop=True)
 
@@ -47,6 +61,21 @@ class FundusContrastDataset(Dataset):
 
         if len(df) == 0:
             raise ValueError(f'split={split} 中所有图像路径均不存在，无法构建 dataset。')
+
+        # 训练集子采样（保守探索 / 烟雾测）
+        if split == 'train':
+            n_before = len(df)
+            n_take = n_before
+            if train_max_samples and train_max_samples > 0:
+                n_take = min(int(train_max_samples), n_before)
+            elif train_subset_ratio < 1.0:
+                n_take = max(1, int(n_before * train_subset_ratio))
+            if n_take < n_before:
+                rng = np.random.default_rng(subset_seed)
+                idx = rng.choice(n_before, size=n_take, replace=False)
+                df = df.iloc[idx].reset_index(drop=True)
+                print(f'[FundusContrastDataset] train 子采样: {n_take}/{n_before} 行 '
+                      f'(ratio={train_subset_ratio}, max_samples={train_max_samples}, seed={subset_seed})')
 
         self.image_paths = df['fundus_image_path'].tolist()
         self.eids = df['eid'].tolist()
@@ -198,8 +227,18 @@ class CMRBank:
     CMR MLP 极小（14→128→d），每 batch 用 fresh forward 计算梯度，无需 epoch 级缓存。
     """
 
-    def __init__(self, csv_path: str, pc_cols: list, split: str = 'train',
-                 device: str = 'cuda'):
+    def __init__(
+        self,
+        csv_path: str,
+        pc_cols: list,
+        split: str = 'train',
+        device: str = 'cuda',
+        max_rows: int = 0,
+        subset_seed: int = 0,
+    ):
+        """
+        max_rows > 0 时：从该 split 中随机最多保留 max_rows 条（节省显存、加快烟雾测）。
+        """
         df = pd.read_csv(csv_path)
         df = df[df['split'] == split].reset_index(drop=True)
 
@@ -209,6 +248,13 @@ class CMRBank:
         missing_cols = [c for c in pc_cols if c not in df.columns]
         if missing_cols:
             raise ValueError(f'PC columns missing from CMR CSV: {missing_cols}')
+
+        n_before = len(df)
+        if max_rows and max_rows > 0 and n_before > max_rows:
+            rng = np.random.default_rng(int(subset_seed) + 910001)
+            idx = rng.choice(n_before, size=max_rows, replace=False)
+            df = df.iloc[idx].reset_index(drop=True)
+            print(f'[CMRBank] split={split} 子采样: {len(df)}/{n_before} 行 (max_rows={max_rows})')
 
         self.pc_matrix = torch.tensor(
             df[pc_cols].values.astype(np.float32)

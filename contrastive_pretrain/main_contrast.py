@@ -68,6 +68,16 @@ def get_args_parser():
     parser.add_argument('--sigma', required=True, type=float,
                         help='高斯核带宽 σ（数据 Agent 在训练集 CMR 上用 median heuristic 估计）')
 
+    # ── 子采样（保守探索 / 烟雾测，仅影响 train fundus 与可选 CMR train bank）──
+    parser.add_argument('--fundus_train_subset_ratio', type=float, default=1.0,
+                        help='仅 train：随机保留比例，1.0=全量')
+    parser.add_argument('--fundus_max_train_samples', type=int, default=0,
+                        help='仅 train：最多保留多少行（0=不限制；>0 时优先于 subset_ratio）')
+    parser.add_argument('--subset_seed', type=int, default=0,
+                        help='train fundus / CMR 子采样随机种子')
+    parser.add_argument('--cmr_train_max_rows', type=int, default=0,
+                        help='train CMR bank 最多行数（0=全量；烟雾测可设 8000–20000 减负）')
+
     # ── 模型 ──
     parser.add_argument('--finetune', required=True, type=str,
                         help='RETFound 预训练权重路径（.pth）')
@@ -107,6 +117,8 @@ def get_args_parser():
                         help='val Recall@5 无提升时的早停 patience（epochs）')
     parser.add_argument('--eval_freq', default=5, type=int,
                         help='每隔多少 epoch 计算一次完整 retrieval recall')
+    parser.add_argument('--skip_full_eval', action='store_true',
+                        help='跳过跨模态 retrieval 全量评估，仅用 val_loss 早停（烟雾测推荐）')
 
     # ── 输出 ──
     parser.add_argument('--output_dir', default='./output_dir/contrast',
@@ -163,8 +175,13 @@ def main(args):
     print(f'[main] blr={args.blr}, eff_bs={eff_bs}, lr={args.lr:.2e}')
 
     # ── 数据集 ──
-    dataset_train = FundusContrastDataset(args.fundus_csv, pc_cols, split='train')
-    dataset_val   = FundusContrastDataset(args.fundus_csv, pc_cols, split='val')
+    dataset_train = FundusContrastDataset(
+        args.fundus_csv, pc_cols, split='train',
+        train_subset_ratio=args.fundus_train_subset_ratio,
+        train_max_samples=args.fundus_max_train_samples,
+        subset_seed=args.subset_seed,
+    )
+    dataset_val = FundusContrastDataset(args.fundus_csv, pc_cols, split='val')
 
     # ── Sampler ──
     num_tasks = misc.get_world_size()
@@ -198,8 +215,11 @@ def main(args):
         pin_memory=False, drop_last=False,
     )
 
-    # ── CMR Bank（全量 PC scores 加载到 GPU）──
-    cmr_bank = CMRBank(args.cmr_csv, pc_cols, split='train', device=str(device))
+    # ── CMR Bank（全量或子集 PC scores 加载到 GPU）──
+    cmr_bank = CMRBank(
+        args.cmr_csv, pc_cols, split='train', device=str(device),
+        max_rows=args.cmr_train_max_rows, subset_seed=args.subset_seed,
+    )
     cmr_bank_val = CMRBank(args.cmr_csv, pc_cols, split='val', device=str(device))
 
     # ── 模型 ──
@@ -245,6 +265,7 @@ def main(args):
     # ── 恢复训练 ──
     start_epoch = 0
     best_recall5 = 0.0
+    best_val_loss = float('inf')
     no_improve = 0
 
     if args.resume:
@@ -255,8 +276,11 @@ def main(args):
         loss_scaler.load_state_dict(ckpt['scaler'])
         start_epoch = ckpt['epoch'] + 1
         best_recall5 = ckpt.get('best_recall5', 0.0)
+        if 'best_val_loss' in ckpt:
+            best_val_loss = ckpt['best_val_loss']
         no_improve = ckpt.get('no_improve', 0)
-        print(f'[main] Resumed from epoch {start_epoch}, best_recall5={best_recall5:.4f}')
+        print(f'[main] Resumed from epoch {start_epoch}, best_recall5={best_recall5:.4f}, '
+              f'best_val_loss={best_val_loss}')
 
     # ── 保存 args ──
     if global_rank == 0:
@@ -284,13 +308,14 @@ def main(args):
             args, log_writer, epoch,
         )
 
-        # ── 完整 retrieval 评估（每 eval_freq 轮）──
-        # broadcast 必须所有 rank 同时执行（避免死锁），故先算出 recall5 再广播
-        recall5 = best_recall5  # 默认：本轮未评估时沿用上轮最优
-        do_eval = (epoch + 1) % args.eval_freq == 0 or epoch == args.epochs - 1
-        if do_eval:
+        # ── 完整 retrieval 评估（可选；烟雾测可 --skip_full_eval）──
+        recall5 = best_recall5
+        do_full_eval = (
+            (not args.skip_full_eval)
+            and ((epoch + 1) % args.eval_freq == 0 or epoch == args.epochs - 1)
+        )
+        if do_full_eval:
             if global_rank == 0:
-                # eval_loader_val 使用 SequentialSampler，覆盖全量 val 数据
                 eval_metrics = run_full_eval(
                     fundus_model_without_ddp, cmr_encoder_without_ddp,
                     eval_loader_val, cmr_bank_val, device=str(device),
@@ -302,25 +327,37 @@ def main(args):
                     for k, v in eval_metrics.items():
                         log_writer.add_scalar(f'eval/{k}', v, epoch)
 
-            # 多卡时广播 recall5（所有 rank 必须同时执行此操作）
             if args.distributed:
                 recall5_t = torch.tensor(recall5, device=device)
                 torch.distributed.broadcast(recall5_t, src=0)
                 recall5 = recall5_t.item()
 
+        val_loss_curr = val_stats['val_loss']
+
         # ── 早停 & 保存最佳 checkpoint ──
-        is_best = recall5 > best_recall5
-        if is_best:
-            best_recall5 = recall5
-            no_improve = 0
+        if args.skip_full_eval:
+            is_best = val_loss_curr < best_val_loss - 1e-6
+            if is_best:
+                best_val_loss = val_loss_curr
+                no_improve = 0
+            else:
+                no_improve += 1
         else:
-            no_improve += 1
+            if do_full_eval:
+                is_best = recall5 > best_recall5
+                if is_best:
+                    best_recall5 = recall5
+                    no_improve = 0
+                else:
+                    no_improve += 1
+            else:
+                is_best = False
 
         if global_rank == 0:
             _save_checkpoint(
                 args, epoch, fundus_model_without_ddp, cmr_encoder_without_ddp,
                 optimizer, loss_scaler, best_recall5, no_improve,
-                is_best=is_best,
+                is_best=is_best, best_val_loss=best_val_loss,
             )
 
         # ── 日志 ──
@@ -330,6 +367,7 @@ def main(args):
             **{f'val_{k}': v for k, v in val_stats.items()},
             'recall5': recall5,
             'best_recall5': best_recall5,
+            'best_val_loss': best_val_loss,
             'no_improve': no_improve,
         }
         if global_rank == 0:
@@ -345,7 +383,10 @@ def main(args):
     total_time = time.time() - start_time
     print(f'\n[main] Training complete in '
           f'{datetime.timedelta(seconds=int(total_time))}')
-    print(f'[main] Best val Recall@5 = {best_recall5:.4f}')
+    if args.skip_full_eval:
+        print(f'[main] Best val_loss = {best_val_loss:.6f} (skip_full_eval 模式)')
+    else:
+        print(f'[main] Best val Recall@5 = {best_recall5:.4f}')
 
     # 保存下游微调兼容的 encoder checkpoint
     if global_rank == 0:
@@ -360,7 +401,8 @@ def main(args):
 #  Checkpoint 保存工具
 # ─────────────────────────────────────────────
 def _save_checkpoint(args, epoch, fundus_model, cmr_encoder,
-                     optimizer, scaler, best_recall5, no_improve, is_best=False):
+                     optimizer, scaler, best_recall5, no_improve, is_best=False,
+                     best_val_loss=float('inf')):
     ckpt = {
         'epoch': epoch,
         'fundus_model': fundus_model.state_dict(),
@@ -368,6 +410,7 @@ def _save_checkpoint(args, epoch, fundus_model, cmr_encoder,
         'optimizer': optimizer.state_dict(),
         'scaler': scaler.state_dict(),
         'best_recall5': best_recall5,
+        'best_val_loss': best_val_loss,
         'no_improve': no_improve,
         'args': vars(args),
     }
@@ -382,7 +425,10 @@ def _save_checkpoint(args, epoch, fundus_model, cmr_encoder,
         # 同时保存兼容格式
         fundus_model.save_encoder_ckpt(
             os.path.join(args.output_dir, 'contrast_pretrain_encoder_best.pth'))
-        print(f'[main] New best checkpoint saved (Recall@5={best_recall5:.4f})')
+        if getattr(args, 'skip_full_eval', False):
+            print(f'[main] New best checkpoint saved (val_loss={best_val_loss:.6f})')
+        else:
+            print(f'[main] New best checkpoint saved (Recall@5={best_recall5:.4f})')
 
     # 定期存档
     if (epoch + 1) % args.save_freq == 0:
