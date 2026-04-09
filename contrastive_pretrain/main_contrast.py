@@ -22,17 +22,18 @@ from pathlib import Path
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-# timm 0.3.2 兼容补丁
-import collections.abc
-if 'torch._six' not in sys.modules:
-    class _TorchSix:
-        container_abcs = collections.abc
-        inf = float('inf')
-    sys.modules['torch._six'] = _TorchSix()
-
+# 必须先 import torch，再注入 torch._six 占位（与 main_finetune.py 一致），否则 PyTorch 1.8 初始化失败
 import torch
 import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
+
+import collections.abc
+if 'torch._six' not in sys.modules:
+    _inf = float('inf')
+    class _TorchSix:
+        container_abcs = collections.abc
+        inf = _inf
+    sys.modules['torch._six'] = _TorchSix()
 
 import util.misc as misc
 from util.misc import NativeScalerWithGradNormCount as NativeScaler

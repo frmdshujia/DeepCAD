@@ -17,8 +17,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SESSION="${TMUX_SESSION:-contrast_train}"
-RUN_SCRIPT="${1:-${ROOT}/contrastive_pretrain/run_contrast_smoke.sh}"
+SESSION="${TMUX_SESSION:-contrast_4gpu}"
+# 默认全量 4 卡；烟雾测可传：contrastive_pretrain/run_contrast_smoke.sh
+RUN_SCRIPT="${1:-${ROOT}/contrastive_pretrain/run_contrast.sh}"
 
 if [[ ! -f "$RUN_SCRIPT" ]]; then
   echo "错误：找不到脚本 $RUN_SCRIPT"
