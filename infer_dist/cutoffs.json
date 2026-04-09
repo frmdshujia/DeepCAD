@@ -1,0 +1,12 @@
+{
+  "target_sens": 0.9,
+  "target_spec": 0.95,
+  "ukb": {
+    "n_matched": 33428,
+    "n_pos": 1337,
+    "n_neg": 32091,
+    "t_low": 0.410121,
+    "t_high": 0.701052
+  },
+  "chinese": {}
+}

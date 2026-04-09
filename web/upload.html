@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DeepCAD - Screening</title>
+  <link rel="icon" href="logo.png" type="image/png">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app">
+    <header class="upload-page-header">
+      <a href="index.html" class="site-logo site-logo--header" aria-label="Home">
+        <img src="logo.png" alt="DeepCAD">
+      </a>
+      <h1>Fundus Image-Based Screening for Coronary Artery Disease</h1>
+    </header>
+
+
+    <main class="main-content main-content--upload">
+      <section class="upload-section">
+        <div class="upload-area" id="uploadArea">
+          <input type="file" id="fileInput" accept="image/*" hidden>
+          <div class="upload-placeholder" id="uploadPlaceholder">
+            <div class="upload-icon">
+              <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+            </div>
+            <p class="upload-text">Click or drag to upload fundus image</p>
+            <p class="upload-hint">JPG, PNG supported</p>
+          </div>
+          <div class="preview-container" id="previewContainer" style="display: none;">
+            <img id="previewImage" alt="Fundus image preview">
+          </div>
+        </div>
+
+        <div class="inference-overlay" id="inferenceOverlay" style="display: none;">
+          <div class="spinner"></div>
+          <p>AI inferencing...</p>
+          <p class="inference-hint">Analyzing retinal microvascular features</p>
+        </div>
+
+        <button class="btn-reupload" id="btnReupload" style="display: none;">Upload Another</button>
+
+        <div class="result-section" id="resultSection" style="display: none;">
+          <h3>Prediction Result</h3>
+          <div class="result-card">
+            <div class="probability-display">
+              <span class="probability-value" id="probabilityValue">0.00</span>
+              <span class="probability-label">Coronary Artery Disease Risk Probability</span>
+            </div>
+            <div class="risk-indicator">
+              <div class="risk-bar">
+                <div class="risk-fill" id="riskFill"></div>
+              </div>
+              <div class="risk-labels">
+                <span>Low Risk</span>
+                <span>High Risk</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="distribution-panel">
+        <div class="distribution-card">
+          <h4 class="card-title">UK Biobank</h4>
+          <p class="card-subtitle">European Population Risk Distribution</p>
+          <div class="distribution-chart">
+            <canvas id="canvasEurope"></canvas>
+            <div class="user-marker" id="markerEurope" style="display: none;">
+              <div class="marker-line"></div>
+              <span class="marker-label">Current Patient</span>
+            </div>
+          </div>
+          <div class="score-interpretation" id="interpretEurope">
+            <span class="score-badge">At 0.5:</span>
+            <span id="percentileEurope">~38th percentile</span>
+            <span class="risk-level" id="riskLevelEurope">Moderate / Below average</span>
+          </div>
+          <div class="distribution-legend">
+            <span class="legend-low">Low</span>
+            <div class="legend-gradient"></div>
+            <span class="legend-high">High</span>
+          </div>
+        </div>
+        <div class="distribution-card">
+          <h4 class="card-title">China Large Cohort</h4>
+          <p class="card-subtitle">Chinese Cohort Risk Distribution</p>
+          <div class="distribution-chart">
+            <canvas id="canvasAsia"></canvas>
+            <div class="user-marker" id="markerAsia" style="display: none;">
+              <div class="marker-line"></div>
+              <span class="marker-label">Current Patient</span>
+            </div>
+          </div>
+          <div class="score-interpretation" id="interpretAsia">
+            <span class="score-badge">At 0.5:</span>
+            <span id="percentileAsia">~78th percentile</span>
+            <span class="risk-level" id="riskLevelAsia">Elevated / Above average</span>
+          </div>
+          <div class="distribution-legend">
+            <span class="legend-low">Low</span>
+            <div class="legend-gradient"></div>
+            <span class="legend-high">High</span>
+          </div>
+        </div>
+        <p class="population-note">
+          The same model-predicted risk probability has different clinical implications in European vs Asian populations, suggesting coronary artery disease risk assessment has population and regional specificity.
+        </p>
+      </aside>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+{
+  "n_matched": 19716,
+  "n_pos": 619,
+  "n_neg": 19097,
+  "target_sens": 0.9,
+  "target_spec": 0.95,
+  "t_low": 0.387858,
+  "t_high": 0.680076
+}

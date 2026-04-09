@@ -1,0 +1,44 @@
+# ====== 模型权重 ======
+*.pth
+*.pt
+*.ckpt
+*.bin
+
+# ====== 大型数据文件 ======
+infer_dist/results/
+fundus_gate/negative_samples/
+fundus_gate/.cifar_cache/
+fundus_gate/train.csv
+fundus_gate/val.csv
+*.tar.gz
+*.tar
+*.zip
+
+# ====== 训练输出与日志 ======
+output_dir/
+*.log
+
+# ====== Python 缓存 ======
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# ====== Jupyter Notebook 检查点 ======
+.ipynb_checkpoints/
+
+# ====== 编辑器 / IDE ======
+.vscode/
+.specstory/
+*.swp
+*.swo
+.DS_Store
+
+# ====== 虚拟环境 ======
+venv/
+env/
+.env
+
+# ====== 推理中间结果 ======
+infer_dist/inference_log.txt

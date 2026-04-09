@@ -1,0 +1,17 @@
+# DeepCAD 后端最小依赖
+# 安装: pip install -r requirements.txt
+#
+# 注意:
+#   1. torch 和 torchvision 需根据服务器是否有 GPU 选择版本
+#   2. CPU 版本：torch==1.8.1+cpu  或 直接 pip install torch torchvision
+#   3. GPU 版本：torch==1.8.1+cu111（与当前训练环境匹配）
+#      pip install torch==1.8.1+cu111 torchvision==0.9.1+cu111 -f https://download.pytorch.org/whl/torch_stable.html
+
+flask>=2.0
+flask-cors>=3.0
+Pillow>=9.0
+timm==0.3.2
+psutil>=5.9
+
+# PyTorch (CPU 版，目标服务器无 GPU 时使用)
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
