@@ -11,12 +11,12 @@
 
 set -e  # 任意命令失败即退出
 
-# ─── 必填项：数据 Agent 交付后填入 ───────────────────────────
-FUNDUS_CSV="/path/to/fundus_table.csv"           # Fundus 表路径
-CMR_CSV="/path/to/cmr_table.csv"                 # CMR 表路径
-PC_COLS="M1_PC1,M1_PC2,M1_PC3,M2_PC1,M2_PC2,M2_PC3,M3_PC1,M3_PC2,M3_PC3,M4_PC1,M4_PC2,M5_PC1,M5_PC2,M6_PC1"
-                                                  # ← 替换为实际 14 列列名（逗号分隔）
-SIGMA=12.374                                      # ← 替换为数据 Agent 计算的 σ 值
+# ─── 数据路径（已由数据 Agent 交付）────────────────────────
+DATA_DIR="/data/home/shujia/CHD/model_train/RETFound_MAE-main/contrastive_pretrain/preprocessed_data"
+FUNDUS_CSV="${DATA_DIR}/fundus_table.csv"
+CMR_CSV="${DATA_DIR}/cmr_table.csv"
+PC_COLS="M1_PC1,M1_PC2,M2_PC1,M2_PC2,M2_PC3,M3_PC1,M3_PC2,M4_PC1,M4_PC2,M5_PC1,M5_PC2,M6_PC1,M6_PC2,M6_PC3"
+SIGMA=6.5893                                      # median heuristic on train CMR
 
 # ─── 模型权重（已知）───────────────────────────────────────
 FINETUNE="/data/home/shujia/CHD/model_train/RETFound_MAE-main/RETFound_cfp_weights.pth"

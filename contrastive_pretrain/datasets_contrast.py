@@ -36,14 +36,26 @@ class FundusContrastDataset(Dataset):
         if missing_cols:
             raise ValueError(f'PC columns missing from fundus CSV: {missing_cols}')
 
+        # 过滤掉图像文件尚未上传到服务器的行（等上传完毕后自动生效，无需修改代码）
+        n_total = len(df)
+        exist_mask = df['fundus_image_path'].apply(os.path.exists)
+        n_missing = int((~exist_mask).sum())
+        if n_missing > 0:
+            df = df[exist_mask].reset_index(drop=True)
+            print(f'[FundusContrastDataset] split={split}: '
+                  f'{n_missing}/{n_total} 行图像尚未上传，已跳过，等上传完毕后自动纳入。')
+
+        if len(df) == 0:
+            raise ValueError(f'split={split} 中所有图像路径均不存在，无法构建 dataset。')
+
         self.image_paths = df['fundus_image_path'].tolist()
         self.eids = df['eid'].tolist()
         self.pc_vectors = df[pc_cols].values.astype(np.float32)  # (N, 14)
         self.is_train = (split == 'train')
         self.transform = self._build_transform()
 
-        print(f'[FundusContrastDataset] split={split}, samples={len(df)}, '
-              f'unique_eids={len(set(self.eids))}')
+        print(f'[FundusContrastDataset] split={split}: '
+              f'可用样本={len(df)}, 唯一EID={len(set(self.eids))}')
 
     def __len__(self):
         return len(self.image_paths)
