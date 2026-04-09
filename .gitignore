@@ -5,6 +5,7 @@
 *.bin
 
 # ====== 大型数据文件 ======
+contrastive_pretrain/preprocessed_data/
 infer_dist/results/
 fundus_gate/negative_samples/
 fundus_gate/.cifar_cache/
