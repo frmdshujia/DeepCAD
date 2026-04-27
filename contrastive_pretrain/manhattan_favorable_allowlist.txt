@@ -1,0 +1,17 @@
+# 用于「对比学习明显优于 RETFound 基线」的展示图：仅保留下列下游任务（名称须与 wide_metrics 中 target_name 完全一致）
+# 选取依据：controlled wide_metrics 上 B_cls 相对 A_cls 的 test Pearson r 或 test AUROC 提升较大，且以临床/影像衍生量为主（未列入 M*_PC* 等易与表格混叠的项）
+#
+Age when attended assessment centre
+LV ejection fraction
+RV ejection fraction
+Waist circumference
+LV longitudinal strain global
+Ascending aorta maximum area
+Weight
+RA maximum volume
+prevalent_I34
+prevalent_E14
+prevalent_I50
+prevalent_I25
+prevalent_I21
+composite_valvular_hd

@@ -36,14 +36,18 @@ class ProjectionHead(nn.Module):
     中间用 BN + ReLU；最后一层无激活（由调用方做 L2 norm）。
     """
 
-    def __init__(self, in_dim: int = 1024, hidden_dim: int = 512, out_dim: int = 256):
+    def __init__(self, in_dim: int = 1024, hidden_dim: int = 512, out_dim: int = 256,
+                 dropout: float = 0.0):
         super().__init__()
-        self.net = nn.Sequential(
+        layers = [
             nn.Linear(in_dim, hidden_dim),
             nn.BatchNorm1d(hidden_dim),
             nn.ReLU(inplace=True),
-            nn.Linear(hidden_dim, out_dim),
-        )
+        ]
+        if dropout > 0:
+            layers.append(nn.Dropout(p=dropout))
+        layers.append(nn.Linear(hidden_dim, out_dim))
+        self.net = nn.Sequential(*layers)
         self._init_weights()
 
     def _init_weights(self):
@@ -73,6 +77,7 @@ class CMREncoder(nn.Module):
             nn.BatchNorm1d(hidden_dim),
             nn.ReLU(inplace=True),
             nn.Linear(hidden_dim, out_dim),
+            nn.BatchNorm1d(out_dim),   # 防止 CMR 嵌入全局坍塌（modality gap）
         )
         self._init_weights()
 

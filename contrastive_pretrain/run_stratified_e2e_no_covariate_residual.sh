@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# =============================================================================
+# 分层负采样实验：与 run_stratified_e2e_controlled.sh 完全一致（超参、launch、分层策略），
+# 唯一区别为输入表路径 —— 使用未做 Age/Sex/BSA 残差校正的建模交付数据：
+#   contrastive_pretrain/preprocessed_data/modeling_delivery_no_covariate_residual/
+#
+# 用法（仓库根）：
+#   bash contrastive_pretrain/run_stratified_e2e_no_covariate_residual.sh
+#   GPU_IDS=0,1,2,3 bash contrastive_pretrain/run_stratified_e2e_no_covariate_residual.sh
+# =============================================================================
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "${REPO_ROOT}"
+
+if [ -f "/data/home/shujia/miniconda3/etc/profile.d/conda.sh" ]; then
+  # shellcheck source=/dev/null
+  source "/data/home/shujia/miniconda3/etc/profile.d/conda.sh"
+  conda activate retfound 2>/dev/null || true
+fi
+PYTHON="${PYTHON:-$(command -v python)}"
+
+DATA_DIR="${REPO_ROOT}/contrastive_pretrain/preprocessed_data/modeling_delivery_no_covariate_residual"
+FUNDUS_CSV="${DATA_DIR}/fundus_table.csv"
+CMR_CSV="${DATA_DIR}/cmr_table.csv"
+PC_COLS="M1_PC1,M1_PC2,M2_PC1,M2_PC2,M2_PC3,M3_PC1,M3_PC2,M4_PC1,M4_PC2,M5_PC1,M5_PC2,M6_PC1,M6_PC2,M6_PC3"
+FINETUNE="${REPO_ROOT}/RETFound_cfp_weights.pth"
+
+GPU_IDS="${GPU_IDS:-0,1,2,3}"
+export CUDA_VISIBLE_DEVICES="${GPU_IDS}"
+N_GPU=$(echo "${GPU_IDS}" | tr ',' '\n' | grep -c . || true)
+
+BATCH_SIZE="${BATCH_SIZE:-16}"
+CMR_SAMPLE_K="${CMR_SAMPLE_K:-2048}"
+SIGMA="${SIGMA:-6.5893}"
+SGT_TEMP="${SGT_TEMP:-0.5}"
+TEMPERATURE="${TEMPERATURE:-0.15}"
+BLR="${BLR:-4e-5}"
+EPOCHS="${EPOCHS:-300}"
+WARMUP_EPOCHS="${WARMUP_EPOCHS:-5}"
+PATIENCE="${PATIENCE:-35}"
+EVAL_FREQ="${EVAL_FREQ:-5}"
+METRIC_FOR_BEST="${METRIC_FOR_BEST:-gt_pred_spearman}"
+NUM_WORKERS="${NUM_WORKERS:-4}"
+
+STRAT_NEG_FRAC_HIGH="${STRAT_NEG_FRAC_HIGH:-0.40}"
+STRAT_NEG_FRAC_LOW="${STRAT_NEG_FRAC_LOW:-0.40}"
+
+TS=$(date +%Y%m%d_%H%M%S)
+OUTPUT_DIR="${REPO_ROOT}/output_dir/exp_stratified_e2e_no_covariate_residual_${TS}"
+LOG_DIR="${OUTPUT_DIR}/tb_logs"
+mkdir -p "${OUTPUT_DIR}" "${LOG_DIR}"
+BUCKET_PKL="${OUTPUT_DIR}/stratified_buckets.pkl"
+
+echo "=============================================="
+echo "  分层负采样 | 输入=no_covariate_residual 交付表"
+echo "  （其余与 run_stratified_e2e_controlled 对齐）"
+echo "  DATA_DIR=${DATA_DIR}"
+echo "  OUT=${OUTPUT_DIR}"
+echo "  GPU_IDS=${GPU_IDS}  N_GPU=${N_GPU}"
+echo "  batch/GPU=${BATCH_SIZE}  K=${CMR_SAMPLE_K}  blr=${BLR}  sigma=${SIGMA}"
+echo "  strat: high=${STRAT_NEG_FRAC_HIGH} low=${STRAT_NEG_FRAC_LOW} (mid=余量)"
+echo "=============================================="
+
+echo "[1/2] 预计算分层桶（sigma=${SIGMA}，与训练一致）..."
+"${PYTHON}" contrastive_pretrain/precompute_stratified_buckets.py \
+  --fundus_csv "${FUNDUS_CSV}" \
+  --cmr_csv "${CMR_CSV}" \
+  --pc_cols "${PC_COLS}" \
+  --sigma "${SIGMA}" \
+  --thresh_high 0.8 \
+  --thresh_low 0.3 \
+  --out_pkl "${BUCKET_PKL}"
+
+ARGS=(
+  contrastive_pretrain/main_contrast.py
+  --fundus_csv "${FUNDUS_CSV}"
+  --cmr_csv "${CMR_CSV}"
+  --pc_cols "${PC_COLS}"
+  --sigma "${SIGMA}"
+  --finetune "${FINETUNE}"
+  --loss_type soft
+  --sgt_temp "${SGT_TEMP}"
+  --temperature "${TEMPERATURE}"
+  --proj_dim 256
+  --cmr_train_max_rows 0
+  --cmr_sample_k "${CMR_SAMPLE_K}"
+  --cmr_sample_mode stratified
+  --stratified_buckets_pkl "${BUCKET_PKL}"
+  --strat_neg_frac_high "${STRAT_NEG_FRAC_HIGH}"
+  --strat_neg_frac_low "${STRAT_NEG_FRAC_LOW}"
+  --batch_size "${BATCH_SIZE}"
+  --epochs "${EPOCHS}"
+  --warmup_epochs "${WARMUP_EPOCHS}"
+  --blr "${BLR}"
+  --min_lr 1e-7
+  --weight_decay 0.05
+  --layer_decay 0.75
+  --proj_lr_scale 10.0
+  --cmr_lr_scale 100.0
+  --clip_grad 1.0
+  --patience "${PATIENCE}"
+  --eval_freq "${EVAL_FREQ}"
+  --metric_for_best "${METRIC_FOR_BEST}"
+  --save_freq 10
+  --output_dir "${OUTPUT_DIR}"
+  --log_dir "${LOG_DIR}"
+  --num_workers "${NUM_WORKERS}"
+  --gpu "${GPU_IDS}"
+  --desc "stratified_e2e_no_covariate_residual_${TS}"
+)
+
+echo "[2/2] 启动训练..."
+if [ "${N_GPU}" -gt 1 ]; then
+  if command -v torchrun >/dev/null 2>&1; then
+    echo "[launch] torchrun --nproc_per_node=${N_GPU}"
+    torchrun --nproc_per_node="${N_GPU}" --master_port="${MASTER_PORT:-29522}" "${ARGS[@]}" 2>&1 | tee "${OUTPUT_DIR}/train.log"
+  else
+    "${PYTHON}" -m torch.distributed.launch --nproc_per_node="${N_GPU}" --master_port="${MASTER_PORT:-29522}" --use_env "${ARGS[@]}" 2>&1 | tee "${OUTPUT_DIR}/train.log"
+  fi
+else
+  "${PYTHON}" "${ARGS[@]}" 2>&1 | tee "${OUTPUT_DIR}/train.log"
+fi
+
+echo ""
+echo "结束。日志: ${OUTPUT_DIR}/train.log"
+echo "最佳权重: ${OUTPUT_DIR}/checkpoint_best.pth（指标: ${METRIC_FOR_BEST}）"

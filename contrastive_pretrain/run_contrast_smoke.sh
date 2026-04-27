@@ -40,6 +40,7 @@ echo "=============================================="
 # 说明：
 #   --fundus_max_train_samples 500     训练集最多 500 行（路径存在前提下）
 #   --cmr_train_max_rows 12000         train CMR bank 随机 1.2 万行（减负）
+#   --sgt_temp 0.5                     目标 softmax(S_GT/τ_g) 锐化（1.0=旧版均匀目标）
 #   --cmr_sample_k 1024                每步负样本数降低
 #   --skip_full_eval                   不做全量 retrieval（省时间）；用 val_loss 选 best
 # 验证集仍为全量 val（监控稳定）
@@ -60,6 +61,7 @@ CUDA_VISIBLE_DEVICES="${GPU_IDS}" "${PYTHON}" contrastive_pretrain/main_contrast
     \
     --proj_dim 256 \
     --temperature 0.07 \
+    --sgt_temp 0.5 \
     --cmr_sample_k 1024 \
     \
     --batch_size 16 \
@@ -75,6 +77,7 @@ CUDA_VISIBLE_DEVICES="${GPU_IDS}" "${PYTHON}" contrastive_pretrain/main_contrast
     --clip_grad 1.0 \
     \
     --patience 8 \
+    --metric_for_best val_loss \
     --eval_freq 999 \
     --skip_full_eval \
     --save_freq 999 \

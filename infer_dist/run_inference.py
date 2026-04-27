@@ -6,6 +6,11 @@
 
 用法:
   python run_inference.py
+
+TTA（可选；默认与对比学习几何 7 视角一致，约 7× 前向）:
+  export INFER_USE_TTA=1
+  export INFER_TTA_MODES=orig,hflip,vflip,rot90,rot180,rot270   # 可省略，与 util.tta.DEFAULT_TTA_MODES 一致
+  python run_inference.py
 """
 
 import os, sys, pickle, csv, json, time
@@ -85,6 +90,14 @@ def worker_fn(gpu_id, work_items, out_dir, checkpoint):
     # 加载模型
     sys.path.insert(0, BASE_DIR)
     import models_vit
+    from util.tta import DEFAULT_TTA_MODES, forward_logits_tta, parse_tta_modes
+
+    use_tta = os.environ.get("INFER_USE_TTA", "").lower() in ("1", "true", "yes")
+    tta_modes = (
+        parse_tta_modes(os.environ.get("INFER_TTA_MODES", DEFAULT_TTA_MODES))
+        if use_tta
+        else None
+    )
     model = models_vit.vit_large_patch16(
         num_classes=2, drop_path_rate=0.2, global_pool=False,
     )
@@ -116,7 +129,10 @@ def worker_fn(gpu_id, work_items, out_dir, checkpoint):
                 loader, desc=desc, position=gpu_id, leave=True
             ):
                 tensors = tensors.to(device, non_blocking=True)
-                out = model(tensors)
+                if tta_modes is not None:
+                    out = forward_logits_tta(model, tensors, tta_modes)
+                else:
+                    out = model(tensors)
                 probs = torch.softmax(out, dim=1)[:, 1].cpu().tolist()
                 for ds, pth, prob, valid in zip(ds_names, paths, probs, valids):
                     if valid:
@@ -181,6 +197,12 @@ def main():
     print(f"  GPUs:       {N_GPUS}")
     print(f"  Batch/GPU:  {BATCH_SIZE}")
     print(f"  IO workers: {IO_WORKERS}")
+    if os.environ.get("INFER_USE_TTA", "").lower() in ("1", "true", "yes"):
+        sys.path.insert(0, BASE_DIR)
+        from util.tta import DEFAULT_TTA_MODES as _DEF_TTA
+        print(f"  TTA:        ON | modes={os.environ.get('INFER_TTA_MODES', _DEF_TTA)}")
+    else:
+        print("  TTA:        off (export INFER_USE_TTA=1 开启)")
     print("=" * 60)
 
     # 1. 加载图像路径

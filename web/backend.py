@@ -20,6 +20,7 @@ from torchvision import transforms
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 import models_vit
+from util.tta import DEFAULT_TTA_MODES, forward_logits_tta, parse_tta_modes
 
 # ── 参数 ────────────────────────────────────────────────────────────────────
 parser = argparse.ArgumentParser()
@@ -36,6 +37,10 @@ parser.add_argument('--gate_checkpoint', default=None,
     help='眼底门控模型权重路径，默认自动查找 fundus_gate/checkpoints/best_fundus_gate.pth')
 parser.add_argument('--gate_threshold', default=0.92, type=float,
     help='眼底门控阈值，低于此值视为非眼底图像')
+parser.add_argument('--tta', action='store_true',
+    help='CHD 预测使用 TTA（多视角 logits 平均，延迟约按视角数倍增加）')
+parser.add_argument('--tta_modes', type=str, default=DEFAULT_TTA_MODES,
+    help='TTA 视角（默认与对比学习几何策略一致，7 视角）')
 args = parser.parse_args()
 
 # ── 日志 ────────────────────────────────────────────────────────────────────
@@ -91,6 +96,9 @@ model.load_state_dict(state_dict)
 model.to(device)
 model.eval()
 log.info("模型加载完成，服务就绪")
+_tta_modes = parse_tta_modes(args.tta_modes) if args.tta else None
+if args.tta:
+    log.info(f"TTA 已启用 | modes={_tta_modes}")
 
 # ── 图像预处理 ───────────────────────────────────────────────────────────────
 transform = transforms.Compose([
@@ -179,7 +187,10 @@ def predict():
 
         t0 = time.perf_counter()
         with torch.no_grad():
-            output = model(tensor)
+            if _tta_modes is not None:
+                output = forward_logits_tta(model, tensor, _tta_modes)
+            else:
+                output = model(tensor)
         latency_ms = (time.perf_counter() - t0) * 1000
 
         prob = torch.softmax(output, dim=1)[0, 1].item()

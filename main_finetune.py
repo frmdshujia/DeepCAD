@@ -37,6 +37,7 @@ from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
 import util.lr_decay as lrd
 import util.misc as misc
 from util.datasets import MyCustomData
+from util.tta import DEFAULT_TTA_MODES
 from util.pos_embed import interpolate_pos_embed
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
 from FocalLoss import FocalLoss #自己定义的损失函数
@@ -174,6 +175,16 @@ def get_args_parser():
                         help='FocalLoss gamma (default 1.5)')
     parser.add_argument('--balance_train', action='store_true',
                         help='训练集 1:1 平衡：随机欠采样阴性与阳性等量')
+
+    # Test-Time Augmentation：仅用于 val/test 的 evaluate，对 logits 做多视角平均
+    parser.add_argument(
+        '--tta', action='store_true',
+        help='验证/测试使用 TTA；默认 7 几何视角（与对比学习对齐），耗时约 7× 单前向',
+    )
+    parser.add_argument(
+        '--tta_modes', type=str, default=DEFAULT_TTA_MODES,
+        help='逗号分隔，默认与对比学习几何增强对齐：orig,hflip,vflip,rot90,rot180,rot270（7× 前向）',
+    )
 
     return parser
 
