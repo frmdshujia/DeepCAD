@@ -1,0 +1,21 @@
+{
+  "cmr_ckpt": "contrastive_pretrain/checkpoints_cmr_v3/best.pth",
+  "cmr_npy_dir": "/data/home/shujia/UKB/CMRI/preprocessed_cmr_v3",
+  "cmr_version": "v3",
+  "out_dir": "contrastive_pretrain/checkpoints_fundus_cmr_lam1_1.0_lam2_0.1_lam3_0.1",
+  "lam1": 1.0,
+  "lam2": 0.1,
+  "lam3": 0.1,
+  "freeze_blocks": 20,
+  "proj_dim": 256,
+  "spatial_pool": 4,
+  "epochs": 50,
+  "batch_size": 16,
+  "fundus_lr": 1e-05,
+  "head_lr": 0.0001,
+  "weight_decay": 0.05,
+  "warmup_epochs": 2,
+  "patience": 10,
+  "retfound_ckpt": "RETFound_cfp_weights.pth",
+  "smoke_test": false
+}

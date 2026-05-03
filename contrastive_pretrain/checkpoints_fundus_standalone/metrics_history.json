@@ -1,0 +1,212 @@
+[
+  {
+    "epoch": 0,
+    "train_loss": 1.131303882598877,
+    "auc/composite_ischemic_hd": 0.634810528507021,
+    "auc/prevalent_I21": 0.5811607971959657,
+    "mean_auc": 0.6079856628514934
+  },
+  {
+    "epoch": 1,
+    "train_loss": 1.1252085252812034,
+    "auc/composite_ischemic_hd": 0.6525482011999905,
+    "auc/prevalent_I21": 0.5932915734046151,
+    "mean_auc": 0.6229198873023027
+  },
+  {
+    "epoch": 2,
+    "train_loss": 1.1106736001215483,
+    "auc/composite_ischemic_hd": 0.6590013781182231,
+    "auc/prevalent_I21": 0.5992576609072318,
+    "mean_auc": 0.6291295195127274
+  },
+  {
+    "epoch": 3,
+    "train_loss": 1.1070175377946152,
+    "auc/composite_ischemic_hd": 0.6664453245428891,
+    "auc/prevalent_I21": 0.6062919008282208,
+    "mean_auc": 0.636368612685555
+  },
+  {
+    "epoch": 4,
+    "train_loss": 1.1007403706249437,
+    "auc/composite_ischemic_hd": 0.671515113187511,
+    "auc/prevalent_I21": 0.6151752789810148,
+    "mean_auc": 0.6433451960842629
+  },
+  {
+    "epoch": 5,
+    "train_loss": 1.10176912044224,
+    "auc/composite_ischemic_hd": 0.672173869508278,
+    "auc/prevalent_I21": 0.6208327294783229,
+    "mean_auc": 0.6465032994933004
+  },
+  {
+    "epoch": 6,
+    "train_loss": 1.0973553287355524,
+    "auc/composite_ischemic_hd": 0.6770104584153485,
+    "auc/prevalent_I21": 0.6219143008969259,
+    "mean_auc": 0.6494623796561372
+  },
+  {
+    "epoch": 7,
+    "train_loss": 1.0911976933479308,
+    "auc/composite_ischemic_hd": 0.6806138554899435,
+    "auc/prevalent_I21": 0.6249308921488114,
+    "mean_auc": 0.6527723738193774
+  },
+  {
+    "epoch": 8,
+    "train_loss": 1.0881848899941695,
+    "auc/composite_ischemic_hd": 0.6816744531663781,
+    "auc/prevalent_I21": 0.6251616989527813,
+    "mean_auc": 0.6534180760595797
+  },
+  {
+    "epoch": 9,
+    "train_loss": 1.0906858745374177,
+    "auc/composite_ischemic_hd": 0.6840196256683083,
+    "auc/prevalent_I21": 0.6236856089273926,
+    "mean_auc": 0.6538526172978505
+  },
+  {
+    "epoch": 10,
+    "train_loss": 1.0885986259109095,
+    "auc/composite_ischemic_hd": 0.6882422536844239,
+    "auc/prevalent_I21": 0.6305239314450116,
+    "mean_auc": 0.6593830925647177
+  },
+  {
+    "epoch": 11,
+    "train_loss": 1.0837594069932637,
+    "auc/composite_ischemic_hd": 0.6889510754855692,
+    "auc/prevalent_I21": 0.6327004932824485,
+    "mean_auc": 0.6608257843840089
+  },
+  {
+    "epoch": 12,
+    "train_loss": 1.0802925379652726,
+    "auc/composite_ischemic_hd": 0.690517598016353,
+    "auc/prevalent_I21": 0.6276576329957113,
+    "mean_auc": 0.6590876155060321
+  },
+  {
+    "epoch": 13,
+    "train_loss": 1.0808914711600857,
+    "auc/composite_ischemic_hd": 0.6901737272169126,
+    "auc/prevalent_I21": 0.6329151972861413,
+    "mean_auc": 0.661544462251527
+  },
+  {
+    "epoch": 14,
+    "train_loss": 1.0779083546839263,
+    "auc/composite_ischemic_hd": 0.6928166575758294,
+    "auc/prevalent_I21": 0.6337766971009592,
+    "mean_auc": 0.6632966773383944
+  },
+  {
+    "epoch": 15,
+    "train_loss": 1.0796537104405854,
+    "auc/composite_ischemic_hd": 0.6952039904822886,
+    "auc/prevalent_I21": 0.6368550157539064,
+    "mean_auc": 0.6660295031180975
+  },
+  {
+    "epoch": 16,
+    "train_loss": 1.0758127087040952,
+    "auc/composite_ischemic_hd": 0.6955952917368241,
+    "auc/prevalent_I21": 0.6366805687509058,
+    "mean_auc": 0.666137930243865
+  },
+  {
+    "epoch": 17,
+    "train_loss": 1.073925292491913,
+    "auc/composite_ischemic_hd": 0.6962263802921187,
+    "auc/prevalent_I21": 0.6379902631734324,
+    "mean_auc": 0.6671083217327756
+  },
+  {
+    "epoch": 18,
+    "train_loss": 1.071823279481185,
+    "auc/composite_ischemic_hd": 0.697831110689507,
+    "auc/prevalent_I21": 0.6385914343837727,
+    "mean_auc": 0.6682112725366398
+  },
+  {
+    "epoch": 19,
+    "train_loss": 1.0751789620048122,
+    "auc/composite_ischemic_hd": 0.6984411190425373,
+    "auc/prevalent_I21": 0.640577446417932,
+    "mean_auc": 0.6695092827302347
+  },
+  {
+    "epoch": 20,
+    "train_loss": 1.0708749300555178,
+    "auc/composite_ischemic_hd": 0.6987006690329194,
+    "auc/prevalent_I21": 0.6412483964294724,
+    "mean_auc": 0.6699745327311959
+  },
+  {
+    "epoch": 21,
+    "train_loss": 1.071014318340703,
+    "auc/composite_ischemic_hd": 0.6988679931383942,
+    "auc/prevalent_I21": 0.6411947204285493,
+    "mean_auc": 0.6700313567834717
+  },
+  {
+    "epoch": 22,
+    "train_loss": 1.0690786819708975,
+    "auc/composite_ischemic_hd": 0.6993370276387803,
+    "auc/prevalent_I21": 0.6410283248256873,
+    "mean_auc": 0.6701826762322338
+  },
+  {
+    "epoch": 23,
+    "train_loss": 1.0695206742537648,
+    "auc/composite_ischemic_hd": 0.7001183126352097,
+    "auc/prevalent_I21": 0.6413047562304419,
+    "mean_auc": 0.6707115344328258
+  },
+  {
+    "epoch": 24,
+    "train_loss": 1.066620966007835,
+    "auc/composite_ischemic_hd": 0.6995096217948211,
+    "auc/prevalent_I21": 0.6405371894172396,
+    "mean_auc": 0.6700234056060304
+  },
+  {
+    "epoch": 25,
+    "train_loss": 1.0703692605620936,
+    "auc/composite_ischemic_hd": 0.6996901210267112,
+    "auc/prevalent_I21": 0.640843142622502,
+    "mean_auc": 0.6702666318246067
+  },
+  {
+    "epoch": 26,
+    "train_loss": 1.0687741599584881,
+    "auc/composite_ischemic_hd": 0.6997797118863356,
+    "auc/prevalent_I21": 0.6408833996231945,
+    "mean_auc": 0.6703315557547651
+  },
+  {
+    "epoch": 27,
+    "train_loss": 1.067660183028171,
+    "auc/composite_ischemic_hd": 0.6998271423414308,
+    "auc/prevalent_I21": 0.6406713794195478,
+    "mean_auc": 0.6702492608804893
+  },
+  {
+    "epoch": 28,
+    "train_loss": 1.0652424950348705,
+    "auc/composite_ischemic_hd": 0.6998903829482244,
+    "auc/prevalent_I21": 0.6406445414190862,
+    "mean_auc": 0.6702674621836553
+  },
+  {
+    "epoch": 29,
+    "train_loss": 1.071757027349974,
+    "auc/composite_ischemic_hd": 0.6998890654355829,
+    "auc/prevalent_I21": 0.6405452408173782,
+    "mean_auc": 0.6702171531264806
+  }
+]

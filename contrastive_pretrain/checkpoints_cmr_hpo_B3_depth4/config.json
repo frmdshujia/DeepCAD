@@ -1,0 +1,18 @@
+{
+  "data_dir": "/data/home/shujia/UKB/CMRI/preprocessed_cmr_v3",
+  "out_dir": "contrastive_pretrain/checkpoints_cmr_hpo_B3_depth4",
+  "spatial_pool": 4,
+  "transformer_depth": 4,
+  "epochs": 40,
+  "batch_size": 24,
+  "unfreeze_batch_size": 6,
+  "enc_lr": 1e-05,
+  "head_lr": 0.0001,
+  "weight_decay": 0.1,
+  "warmup_epochs": 3,
+  "freeze_epochs": 5,
+  "patience": 8,
+  "medsam_ckpt": "/data/home/shujia/CHD/model_train/RETFound_MAE-main/pretrained_weights/hf_cache/models--flaviagiammarino--medsam-vit-base/blobs/b80a96478503f89e76f1f7bbba50cfcd4ec9e7467f0d5185310216b33946ec9c",
+  "resume": false,
+  "smoke_test": false
+}

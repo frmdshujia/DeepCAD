@@ -14,6 +14,8 @@ UniqueEIDSampler:
 """
 from __future__ import annotations
 
+import fcntl
+import json
 import pathlib
 from collections import defaultdict
 
@@ -69,26 +71,48 @@ def _fundus_transform(is_train: bool):
 _EYE_INDEX: dict | None = None
 
 
+_INDEX_CACHE = pathlib.Path('/tmp/fundus_eye_index.json')
+
 def _get_eye_index() -> dict:
-    """(eid, instance) -> [path, ...] sorted right eye (21016) first."""
+    """(eid, instance) -> [path, ...] sorted right eye (21016) first.
+    Cached to /tmp so 4 DDP processes only scan the filesystem once.
+    """
     global _EYE_INDEX
     if _EYE_INDEX is not None:
         return _EYE_INDEX
-    print('[datasets_paired_max] building fundus eye index ...')
-    index: dict = {}
-    try:
-        for fname in FUNDUS_IMG_DIR.iterdir():
-            if fname.suffix != '.png':
-                continue
-            parts = fname.stem.split('_')
-            if len(parts) < 3:
-                continue
-            eid, field, inst = int(parts[0]), int(parts[1]), int(parts[2])
-            index.setdefault((eid, inst), []).append((field, fname))
-    except Exception as e:
-        print(f'[datasets_paired_max] warning: could not build index: {e}')
-    for key in index:
-        index[key] = [p for _, p in sorted(index[key], key=lambda x: x[0], reverse=True)]
+
+    # File-lock so only rank-0 builds the cache; others wait and read.
+    lock_path = pathlib.Path('/tmp/fundus_eye_index.lock')
+    with open(lock_path, 'w') as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            if _INDEX_CACHE.exists():
+                print('[datasets_paired_max] loading fundus eye index from cache ...')
+                raw = json.loads(_INDEX_CACHE.read_text())
+                index = {(int(k.split(',')[0]), int(k.split(',')[1])): [pathlib.Path(p) for p in v]
+                         for k, v in raw.items()}
+            else:
+                print('[datasets_paired_max] building fundus eye index ...')
+                index: dict = {}
+                try:
+                    for fname in FUNDUS_IMG_DIR.iterdir():
+                        if fname.suffix != '.png':
+                            continue
+                        parts = fname.stem.split('_')
+                        if len(parts) < 3:
+                            continue
+                        eid, field, inst = int(parts[0]), int(parts[1]), int(parts[2])
+                        index.setdefault((eid, inst), []).append((field, fname))
+                except Exception as e:
+                    print(f'[datasets_paired_max] warning: could not build index: {e}')
+                for key in index:
+                    index[key] = [p for _, p in sorted(index[key], key=lambda x: x[0], reverse=True)]
+                # Save cache
+                serial = {f'{k[0]},{k[1]}': [str(p) for p in v] for k, v in index.items()}
+                _INDEX_CACHE.write_text(json.dumps(serial))
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
+
     n_imgs = sum(len(v) for v in index.values())
     print(f'[datasets_paired_max] {len(index):,} (eid,inst) keys, {n_imgs:,} images')
     _EYE_INDEX = index
@@ -171,33 +195,41 @@ class PairedMaxDataset(Dataset):
 
 class UniqueEIDSampler(Sampler):
     """
-    Guarantees no duplicate EIDs within any batch.
+    Guarantees no duplicate EIDs within any batch, DDP-compatible.
 
-    Each epoch: for every EID, randomly select ONE of its eye indices. Then
-    shuffle the resulting one-per-EID list. Because every EID contributes
-    exactly one index per epoch, any contiguous window of batch_size indices
-    contains at most one index per EID.
-
-    Over multiple epochs, the random pick rotates between eyes so both eyes
-    accumulate roughly equal training steps.
+    Each epoch: for every EID, randomly select ONE eye index (left or right).
+    The resulting one-per-EID list is shuffled, then divided across DDP ranks.
+    This ensures:
+      - No duplicate EIDs globally (UniqueEID selection)
+      - Each rank gets a disjoint subset (DDP shard)
+      - No padding with duplicate indices (drop_last handled by DataLoader)
     """
 
-    def __init__(self, dataset: PairedMaxDataset, seed: int = 0):
+    def __init__(self, dataset: PairedMaxDataset, seed: int = 0,
+                 num_replicas: int = 1, rank: int = 0):
         eid_to_idx: dict = defaultdict(list)
         for i, r in enumerate(dataset.rows):
             eid_to_idx[r['eid']].append(i)
-        self.eid_groups = list(eid_to_idx.values())  # [[idx, ...], ...]
+        self.eid_groups = list(eid_to_idx.values())
         self.seed = seed
         self._epoch = 0
+        self.num_replicas = num_replicas
+        self.rank = rank
 
     def set_epoch(self, epoch: int):
         self._epoch = epoch
 
     def __len__(self):
-        return len(self.eid_groups)
+        # each rank gets floor(total / num_replicas) samples
+        return len(self.eid_groups) // self.num_replicas
 
     def __iter__(self):
         rng = np.random.default_rng(self.seed + self._epoch)
+        # 1. pick one eye per EID (same choice on all ranks — same seed)
         indices = [int(rng.choice(g)) for g in self.eid_groups]
         rng.shuffle(indices)
+        # 2. trim to multiple of num_replicas, then take this rank's shard
+        total = (len(indices) // self.num_replicas) * self.num_replicas
+        indices = indices[:total]
+        indices = indices[self.rank::self.num_replicas]
         return iter(indices)

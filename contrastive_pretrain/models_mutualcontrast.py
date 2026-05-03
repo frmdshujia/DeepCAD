@@ -102,23 +102,30 @@ class MutualContrastModel(nn.Module):
         self.proj_head_f = ProjHead(dim_f, proj_dim)
         self.proj_head_c = ProjHead(dim_c, proj_dim)
 
-    def forward(self, fundus: torch.Tensor, cmr: torch.Tensor) -> dict:
+    def forward(self, fundus: torch.Tensor, cmr: torch.Tensor,
+                fundus_only: bool = False) -> dict:
         """
         Args:
             fundus: (B, 3, 224, 224)
             cmr:    (B, 4, 1, 224, 224)
+            fundus_only: skip CMR encoder (saves memory when gamma=0, lam=0)
         Returns dict with keys:
             cls_f, reg_f, cls_c, reg_c : task head outputs
             p_f, p_c                   : L2-normalised projection embeddings
         """
         z_f = self.fundus_enc(fundus)          # (B, 1024)
-        _, z_c = self.cmr_enc(cmr)             # (B, 768)  (proj_emb, raw_feat)
-
         cls_f, reg_f = self.task_head_f(z_f)
-        cls_c, reg_c = self.task_head_c(z_c)
-
         p_f = self.proj_head_f(z_f.float())    # cast fp32 for cosine stability
-        p_c = self.proj_head_c(z_c.float())
+
+        if fundus_only:
+            # dummy CMR outputs (all zeros, not used in loss when gamma=lam=0)
+            p_c   = torch.zeros_like(p_f)
+            cls_c = [torch.zeros_like(c) for c in cls_f]
+            reg_c = [torch.zeros_like(r) for r in reg_f]
+        else:
+            _, z_c = self.cmr_enc(cmr)         # (B, 768)
+            cls_c, reg_c = self.task_head_c(z_c)
+            p_c = self.proj_head_c(z_c.float())
 
         return {
             'cls_f': cls_f, 'reg_f': reg_f,

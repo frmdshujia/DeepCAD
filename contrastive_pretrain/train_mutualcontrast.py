@@ -84,9 +84,9 @@ def setup_dist():
 # ── collate ───────────────────────────────────────────────────────────────────
 def collate_fn(batch: list, check_unique_eid: bool = False) -> dict:
     eids = [b['eid'] for b in batch]
-    if check_unique_eid:
-        assert len(eids) == len(set(eids)), \
-            f'Duplicate EIDs in batch: {[e for e in eids if eids.count(e) > 1]}'
+    if check_unique_eid and len(eids) != len(set(eids)):
+        dups = [e for e in eids if eids.count(e) > 1]
+        print(f'[WARNING] Duplicate EIDs in batch (DDP split): {dups[:4]}', flush=True)
     keys = [k for k in batch[0] if k != 'eid']
     out = {'eid': eids}
     for k in keys:
@@ -105,7 +105,7 @@ def collate_fn_eval(batch: list) -> dict:
 # ── evaluation ────────────────────────────────────────────────────────────────
 @torch.no_grad()
 def evaluate(model_raw: MutualContrastModel, loader: DataLoader,
-             device: torch.device, criterion) -> dict:
+             device: torch.device, criterion, fundus_only: bool = False) -> dict:
     model_raw.eval()
     all_cls_f = [[] for _ in CLS_COLS]
     all_cls_c = [[] for _ in CLS_COLS]
@@ -124,7 +124,7 @@ def evaluate(model_raw: MutualContrastModel, loader: DataLoader,
         reg_gt = batch['reg_labels'].to(device)
         reg_mk = batch['reg_mask'].to(device)
 
-        results = model_raw(fundus, cmr)
+        results = model_raw(fundus, cmr, fundus_only=fundus_only)
         losses  = criterion(results, {
             'cls_labels': cls_gt, 'reg_labels': reg_gt, 'reg_mask': reg_mk,
         })
@@ -191,7 +191,7 @@ def evaluate(model_raw: MutualContrastModel, loader: DataLoader,
 
 # ── training loop ─────────────────────────────────────────────────────────────
 def train_one_epoch(model, loader, optimizer, scaler, criterion,
-                    device, sampler, epoch) -> dict:
+                    device, sampler, epoch, fundus_only: bool = False) -> dict:
     model.train()
     if sampler is not None:
         sampler.set_epoch(epoch)
@@ -207,7 +207,8 @@ def train_one_epoch(model, loader, optimizer, scaler, criterion,
 
         optimizer.zero_grad()
         with torch.cuda.amp.autocast():
-            results = model(fundus, cmr) if not isinstance(model, DDP) else model(fundus, cmr)
+            model_raw_inner = model.module if isinstance(model, DDP) else model
+            results = model_raw_inner(fundus, cmr, fundus_only=fundus_only)
             losses  = criterion(
                 results,
                 {'cls_labels': cls_gt, 'reg_labels': reg_gt, 'reg_mask': reg_mk},
@@ -252,6 +253,17 @@ def main():
                         help='8 samples, 2 epochs — fast pipeline check')
     parser.add_argument('--no_dist',     action='store_true',
                         help='Force single-GPU mode (skip torchrun init)')
+    parser.add_argument('--resume',      action='store_true',
+                        help='Auto-resume from last.pth in out_dir if it exists')
+    parser.add_argument('--head_lr_mult', type=float, default=1.0,
+                        help='LR multiplier for task/proj heads vs encoder LR. '
+                             'E.g. 10 → heads get lr*10 while encoder keeps lr.')
+    parser.add_argument('--freeze_epochs', type=int, default=0,
+                        help='Freeze both encoder backbones for first N epochs '
+                             '(only task/proj heads train). Then unfreeze for full fine-tune.')
+    parser.add_argument('--fundus_only', action='store_true',
+                        help='Skip CMR encoder entirely (saves ~40%% GPU memory). '
+                             'Use with --lam 0 --gamma 0 for pure fundus classification.')
     args = parser.parse_args()
 
     distributed = False if args.no_dist else setup_dist()
@@ -268,36 +280,35 @@ def main():
         val_ds.rows   = val_ds.rows[:8]
         args.batch_size = 2   # guarantee full batch even if <8 unique EIDs
 
-    train_sampler = UniqueEIDSampler(train_ds, seed=42)
-
     if distributed:
-        # Wrap UniqueEIDSampler in DistributedSampler-like behaviour:
-        # each GPU gets a non-overlapping slice of the epoch's index list.
-        # Simple approach: let each GPU see the full shuffled list but skip
-        # by world_size — this preserves the unique-EID-per-batch guarantee
-        # within each GPU's local batch.
-        from torch.utils.data import DistributedSampler
-        dist_sampler = DistributedSampler(train_ds, shuffle=False)
-        log('[WARNING] DDP mode: using DistributedSampler; '
-            'UniqueEIDSampler enforced via collate assertion only.')
-        effective_sampler = dist_sampler
+        import torch.distributed as dist_mod
+        num_replicas = dist_mod.get_world_size()
+        rank         = dist_mod.get_rank()
     else:
-        effective_sampler = train_sampler
+        num_replicas, rank = 1, 0
+
+    train_sampler    = UniqueEIDSampler(train_ds, seed=42,
+                                        num_replicas=num_replicas, rank=rank)
+    effective_sampler = train_sampler
+    log(f'[sampler] UniqueEIDSampler: {len(train_sampler)} samples/rank '
+        f'(rank {rank}/{num_replicas}, no duplicate EIDs guaranteed)')
 
     train_loader = DataLoader(
         train_ds,
         batch_size=args.batch_size,
         sampler=effective_sampler,
-        num_workers=4,
-        pin_memory=True,
+        num_workers=2,
+        pin_memory=False,
+        persistent_workers=True,
         drop_last=True,
         collate_fn=collate_fn_train,
     )
     val_loader = DataLoader(
         val_ds,
         batch_size=args.batch_size,
-        num_workers=2,
-        pin_memory=True,
+        num_workers=1,
+        pin_memory=False,
+        persistent_workers=True,
         collate_fn=collate_fn_eval,
     )
 
@@ -312,7 +323,25 @@ def main():
         model = DDP(model, device_ids=[local_rank], find_unused_parameters=True)
 
     criterion = build_loss(gamma=args.gamma, lam=args.lam, temperature=args.temperature)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.05)
+
+    # ── optimizer: optionally split encoder vs head LR ────────────────────────
+    model_raw_for_opt = model.module if isinstance(model, DDP) else model
+    if args.head_lr_mult != 1.0:
+        enc_params  = (list(model_raw_for_opt.fundus_enc.parameters()) +
+                       list(model_raw_for_opt.cmr_enc.parameters()))
+        head_params = (list(model_raw_for_opt.task_head_f.parameters()) +
+                       list(model_raw_for_opt.proj_head_f.parameters()) +
+                       list(model_raw_for_opt.task_head_c.parameters()) +
+                       list(model_raw_for_opt.proj_head_c.parameters()))
+        optimizer = torch.optim.AdamW([
+            {'params': enc_params,  'lr': args.lr,                      'name': 'encoder'},
+            {'params': head_params, 'lr': args.lr * args.head_lr_mult,  'name': 'heads'},
+        ], weight_decay=0.05)
+        log(f'[optimizer] encoder lr={args.lr:.2e}  '
+            f'heads lr={args.lr * args.head_lr_mult:.2e}  (head_lr_mult={args.head_lr_mult})')
+    else:
+        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.05)
+
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=args.epochs, eta_min=args.lr * 0.01)
     scaler    = torch.cuda.amp.GradScaler()
@@ -362,30 +391,69 @@ def main():
         log('  [PASS] gradients non-zero, loss finite')
         optimizer.zero_grad()
 
-    # ── training ──────────────────────────────────────────────────────────────
+    # ── resume ────────────────────────────────────────────────────────────────
     best_auc_f  = 0.0
     no_improve  = 0
-    history     = []   # list of dicts, one per epoch
+    history     = []
+    start_epoch = 0
+
+    last_ckpt = out_dir / 'last.pth'
+    if args.resume and last_ckpt.exists():
+        ckpt = torch.load(last_ckpt, map_location=device)
+        model_raw = model.module if isinstance(model, DDP) else model
+        model_raw.load_state_dict(ckpt['model'])
+        optimizer.load_state_dict(ckpt['optimizer'])
+        scheduler.load_state_dict(ckpt['scheduler'])
+        scaler.load_state_dict(ckpt['scaler'])
+        start_epoch = ckpt['epoch'] + 1
+        best_auc_f  = ckpt.get('best_auc_f', 0.0)
+        no_improve  = ckpt.get('no_improve', 0)
+        history     = ckpt.get('history', [])
+        if is_main():
+            log(f'[resume] restored from epoch {ckpt["epoch"]} '
+                f'(best_auc_f={best_auc_f:.4f})')
+
+    # ── training ──────────────────────────────────────────────────────────────
 
     if device.type == 'cuda' and is_main():
         mem = torch.cuda.max_memory_allocated(device) / 1e9
         log(f'Peak GPU memory after model init: {mem:.2f} GB')
 
-    for epoch in range(args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         if not distributed and not args.smoke_test:
             train_sampler.set_epoch(epoch)
         elif distributed:
             effective_sampler.set_epoch(epoch)
+
+        # ── freeze / unfreeze encoder backbone ────────────────────────────────
+        model_raw = model.module if isinstance(model, DDP) else model
+        if args.freeze_epochs > 0:
+            if epoch < args.freeze_epochs:
+                for p in model_raw.fundus_enc.parameters():
+                    p.requires_grad_(False)
+                for p in model_raw.cmr_enc.parameters():
+                    p.requires_grad_(False)
+                if epoch == start_epoch:
+                    log(f'[freeze] Encoder frozen for first {args.freeze_epochs} epochs '
+                        f'— only task/proj heads train')
+            elif epoch == args.freeze_epochs:
+                for p in model_raw.fundus_enc.parameters():
+                    p.requires_grad_(True)
+                for p in model_raw.cmr_enc.parameters():
+                    p.requires_grad_(True)
+                log(f'[freeze] Encoder unfrozen at epoch {epoch} — full fine-tune begins')
 
         t0         = time.time()
         model_raw  = model.module if isinstance(model, DDP) else model
         train_loss = train_one_epoch(
             model, train_loader, optimizer, scaler, criterion,
             device, train_sampler if not distributed else None, epoch,
+            fundus_only=args.fundus_only,
         )
         scheduler.step()
 
-        val_metrics = evaluate(model_raw, val_loader, device, criterion)
+        val_metrics = evaluate(model_raw, val_loader, device, criterion,
+                               fundus_only=args.fundus_only)
         dt          = time.time() - t0
         mean_auc_f  = val_metrics['mean_auc_f']
 
@@ -438,6 +506,21 @@ def main():
             log(f'  [saved] best mean_AUC_f={best_auc_f:.4f}')
         elif is_main():
             no_improve += 1
+
+        # save last checkpoint every epoch for resume
+        if is_main():
+            model_raw = model.module if isinstance(model, DDP) else model
+            torch.save({
+                'epoch':       epoch,
+                'model':       model_raw.state_dict(),
+                'optimizer':   optimizer.state_dict(),
+                'scheduler':   scheduler.state_dict(),
+                'scaler':      scaler.state_dict(),
+                'best_auc_f':  best_auc_f,
+                'no_improve':  no_improve,
+                'history':     history,
+                'args':        vars(args),
+            }, out_dir / 'last.pth')
 
         if no_improve >= args.patience:
             log(f'Early stopping at epoch {epoch} (no improvement for {args.patience} epochs)')

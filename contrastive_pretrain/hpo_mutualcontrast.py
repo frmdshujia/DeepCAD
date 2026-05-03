@@ -34,7 +34,7 @@ TORCHRUN  = '/data/home/shujia/miniconda3/envs/modeltrain/bin/torchrun'
 
 PILOT_EPOCHS = 5
 FULL_EPOCHS  = 30
-GPUS         = 4
+GPUS         = 3
 BATCH        = 8       # per-GPU batch size
 MASTER_PORT  = 29502   # avoid collision with other runs
 
@@ -73,6 +73,7 @@ def run_config(cfg: dict, epochs: int, tag: str, out_dir: pathlib.Path) -> float
         '--patience',     str(epochs),   # no early stopping during pilot
         '--grad_ckpt',
         '--out_dir',      str(out_dir),
+        '--resume',
     ]
 
     print(f'\n{"="*60}')
@@ -178,17 +179,50 @@ def _plot_curves(out_dir: pathlib.Path):
         print(f'[HPO] Plot failed (non-fatal): {e}', flush=True)
 
 
+def _acquire_lock(configs_tag: str) -> pathlib.Path:
+    """Write PID file; abort if another instance is already running."""
+    lock = OUT_ROOT / f'hpo_{configs_tag}.pid'
+    if lock.exists():
+        old_pid = int(lock.read_text().strip())
+        try:
+            os.kill(old_pid, 0)   # 0 = just check existence
+            print(f'[HPO] ABORT: another HPO instance (PID {old_pid}) is already running '
+                  f'for configs={configs_tag}. Kill it first or wait for it to finish.', flush=True)
+            sys.exit(1)
+        except ProcessLookupError:
+            pass   # stale PID file — overwrite it
+    lock.write_text(str(os.getpid()))
+    return lock
+
+
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--configs', type=str, default=None,
+                        help='Comma-separated indices into GRID to run, e.g. "0,1,2". '
+                             'Default: run all.')
+    parser.add_argument('--pilot-only', action='store_true',
+                        help='Run pilots only; skip full training (use when splitting across servers).')
+    args = parser.parse_args()
+
+    grid = GRID
+    if args.configs is not None:
+        indices = [int(x) for x in args.configs.split(',')]
+        grid = [GRID[i] for i in indices]
+
+    configs_tag = args.configs.replace(',', '_') if args.configs else 'all'
+    pid_lock = _acquire_lock(configs_tag)
+
     print('=' * 60)
     print('Mutual Contrastive HPO Sweep')
-    print(f'  Grid: {len(GRID)} configs × {PILOT_EPOCHS} pilot epochs')
+    print(f'  Grid: {len(grid)} configs × {PILOT_EPOCHS} pilot epochs')
     print(f'  GPUs: {GPUS}   batch/GPU: {BATCH}')
     print(f'  Results dir: {OUT_ROOT}')
     print('=' * 60, flush=True)
 
     # ── Phase 1: pilot sweep ───────────────────────────────────────────────
     results = []
-    for i, cfg in enumerate(GRID):
+    for i, cfg in enumerate(grid):
         tag     = f'pilot_lr{cfg["lr"]:.0e}_lam{cfg["lam"]}'
         out_dir = OUT_ROOT / tag
         auc     = run_config(cfg, PILOT_EPOCHS, tag, out_dir)
@@ -214,6 +248,11 @@ def main():
                    for r in results], f, indent=2)
 
     # ── Phase 2: full training with best config ────────────────────────────
+    if args.pilot_only:
+        print('\n[HPO] --pilot-only mode: skipping full training.', flush=True)
+        pid_lock.unlink(missing_ok=True)
+        return
+
     print(f'\n[HPO] Starting full {FULL_EPOCHS}-epoch training with best config ...', flush=True)
     full_out = HERE / 'checkpoints_mutualcontrast_best'
     run_config(best['cfg'], FULL_EPOCHS, 'full_best', full_out)
@@ -221,6 +260,7 @@ def main():
     # ── plot loss curves ───────────────────────────────────────────────────
     _plot_curves(full_out)
 
+    pid_lock.unlink(missing_ok=True)
     print('\n[HPO] All done.')
     print(f'  Final checkpoint : {full_out}/mutualcontrast_best_full.pth')
     print(f'  Deploy checkpoint: {full_out}/mutualcontrast_best_fundus.pt')

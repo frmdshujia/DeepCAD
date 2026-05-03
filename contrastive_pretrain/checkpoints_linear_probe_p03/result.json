@@ -1,0 +1,10 @@
+{
+  "encoder_ckpt": null,
+  "data": "paired_max",
+  "probe_epochs": 100,
+  "metrics": {
+    "auc/composite_ischemic_hd": 0.6050342037055313,
+    "auc/prevalent_I21": 0.6846598371421067,
+    "mean_auc": 0.644847020423819
+  }
+}

@@ -1,0 +1,72 @@
+[
+  {
+    "epoch": 0,
+    "train_loss": 0.9553711598878996,
+    "auc_c/composite_ischemic_hd": 0.6762153093396633,
+    "auc_c/prevalent_I21": 0.7202037797409204,
+    "mean_auc_c": 0.6982095445402918,
+    "mae_c/LV ejection fraction": 4.7481279373168945,
+    "mae_c/LV end diastolic volume": 19.09735107421875,
+    "mae_c/LV end systolic volume": 11.320236206054688
+  },
+  {
+    "epoch": 1,
+    "train_loss": 0.766913393113999,
+    "auc_c/composite_ischemic_hd": 0.7092191582304452,
+    "auc_c/prevalent_I21": 0.746602518905617,
+    "mean_auc_c": 0.7279108385680311,
+    "mae_c/LV ejection fraction": 4.537108898162842,
+    "mae_c/LV end diastolic volume": 14.668495178222656,
+    "mae_c/LV end systolic volume": 8.959022521972656
+  },
+  {
+    "epoch": 2,
+    "train_loss": 0.5251267283422754,
+    "auc_c/composite_ischemic_hd": 0.6567371171236684,
+    "auc_c/prevalent_I21": 0.6638325522237429,
+    "mean_auc_c": 0.6602848346737057,
+    "mae_c/LV ejection fraction": 4.43229341506958,
+    "mae_c/LV end diastolic volume": 11.946100234985352,
+    "mae_c/LV end systolic volume": 8.502649307250977
+  },
+  {
+    "epoch": 3,
+    "train_loss": 0.3204271334487234,
+    "auc_c/composite_ischemic_hd": 0.6222685081782436,
+    "auc_c/prevalent_I21": 0.6428462803976055,
+    "mean_auc_c": 0.6325573942879246,
+    "mae_c/LV ejection fraction": 4.552065372467041,
+    "mae_c/LV end diastolic volume": 12.914430618286133,
+    "mae_c/LV end systolic volume": 8.871526718139648
+  },
+  {
+    "epoch": 4,
+    "train_loss": 0.18850318321452147,
+    "auc_c/composite_ischemic_hd": 0.632932169143427,
+    "auc_c/prevalent_I21": 0.6031825031451759,
+    "mean_auc_c": 0.6180573361443014,
+    "mae_c/LV ejection fraction": 4.541886806488037,
+    "mae_c/LV end diastolic volume": 11.464595794677734,
+    "mae_c/LV end systolic volume": 7.932678699493408
+  },
+  {
+    "epoch": 5,
+    "train_loss": 0.11548063194788347,
+    "auc_c/composite_ischemic_hd": 0.6465591124177371,
+    "auc_c/prevalent_I21": 0.609853040797423,
+    "mean_auc_c": 0.6282060766075801,
+    "mae_c/LV ejection fraction": 4.522735118865967,
+    "mae_c/LV end diastolic volume": 10.99829387664795,
+    "mae_c/LV end systolic volume": 8.090063095092773
+  },
+  {
+    "epoch": 6,
+    "train_loss": 0.08940100519664887,
+    "auc_c/composite_ischemic_hd": 0.6605158864135714,
+    "auc_c/prevalent_I21": 0.6312540610786225,
+    "mean_auc_c": 0.645884973746097,
+    "mae_c/LV ejection fraction": 4.327637672424316,
+    "mae_c/LV end diastolic volume": 11.9560546875,
+    "mae_c/LV end systolic volume": 8.094585418701172
+  }
+]
