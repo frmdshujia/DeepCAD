@@ -29,11 +29,15 @@ OUT_DIR=contrastive_pretrain/checkpoints_mutualcontrast
 
 GRAD_CKPT="--grad_ckpt"   # keeps ViT-L peak mem ~3GB vs ~10GB
 
+mkdir -p $OUT_DIR
+LOG=$OUT_DIR/train.log
+
 echo "============================================================"
 echo "Mutual Contrastive + Downstream Task Training"
 echo "  GPUs=$GPUS  epochs=$EPOCHS  batch/GPU=$BATCH  lr=$LR"
 echo "  gamma=$GAMMA  lam=$LAM  temperature=$TEMP"
 echo "  grad_ckpt=ON  patience=$PATIENCE"
+echo "  log -> $LOG"
 echo "============================================================"
 
 if [ "$SMOKE" = "1" ]; then
@@ -49,7 +53,7 @@ if [ "$SMOKE" = "1" ]; then
         --out_dir $OUT_DIR \
         $GRAD_CKPT \
         --smoke_test \
-        --no_dist
+        --no_dist 2>&1 | tee $LOG
 else
     torchrun \
         --nproc_per_node=$GPUS \
@@ -63,5 +67,5 @@ else
         --temperature $TEMP \
         --patience $PATIENCE \
         --out_dir $OUT_DIR \
-        $GRAD_CKPT
+        $GRAD_CKPT 2>&1 | tee $LOG
 fi
