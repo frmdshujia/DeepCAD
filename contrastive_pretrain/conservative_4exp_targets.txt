@@ -1,7 +1,0 @@
-# 4 个实验：2 个心梗/缺血病史（二分类）+ 2 个心脏指标（回归）
-# 二分类
-composite_ischemic_hd
-prevalent_I21
-# 回归（左室）
-LV ejection fraction
-LV end diastolic volume
