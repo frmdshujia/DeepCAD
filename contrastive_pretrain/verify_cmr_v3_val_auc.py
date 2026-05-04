@@ -1,6 +1,11 @@
 """
-Recompute validation AUC for checkpoints_cmr_v3/best.pth using the same
-dataset + evaluate() path as train_cmr_v3.py. Run:
+Recompute validation metrics for checkpoints_cmr_v3/best.pth using the same
+dataset + evaluate() path as train_cmr_v3.py.
+
+Canonical recomputed numbers live in checkpoints_cmr_v3/metrics_verified.json
+(mean_AUC on task1_cmr_val ~0.685 under conda env modeltrain / PyTorch 2.1).
+
+Run:
 
   conda activate modeltrain
   python contrastive_pretrain/verify_cmr_v3_val_auc.py
@@ -28,7 +33,7 @@ from contrastive_pretrain.models_cmr_v3 import CMREncoderV3  # noqa: E402
 
 DATA_DIR = "/data/home/shujia/UKB/CMRI/preprocessed_cmr_v3"
 CKPT = ROOT / "contrastive_pretrain/checkpoints_cmr_v3/best.pth"
-METRICS_JSON = ROOT / "contrastive_pretrain/checkpoints_cmr_v3/metrics_history.json"
+VERIFIED_JSON = ROOT / "contrastive_pretrain/checkpoints_cmr_v3/metrics_verified.json"
 MEDSAM_CKPT = str(
     ROOT
     / "pretrained_weights/hf_cache/"
@@ -68,23 +73,24 @@ def main():
     for k in sorted(metrics):
         print(f"  {k}: {metrics[k]:.6g}")
 
-    if METRICS_JSON.is_file():
-        hist = json.loads(METRICS_JSON.read_text())
-        row = next((r for r in hist if r.get("epoch") == ep), None)
-        if row:
-            print(f"\n=== metrics_history.json epoch {ep} (same epoch as best.pth) ===")
-            for k in sorted(row):
-                if k == "epoch":
-                    continue
-                print(f"  {k}: {row[k]}")
-            print("\n=== Absolute deltas (recomputed - logged) ===")
-            for k in metrics:
-                if k not in row:
-                    continue
-                dv = metrics[k] - row[k]
-                print(f"  {k}: {dv:+.6g}")
-        else:
-            print(f"\n[warn] no history row for epoch {ep}")
+    emb = ckpt.get("metrics")
+    if emb:
+        print("\n=== Embedded ckpt['metrics'] (should match after 2026-05-03 patch) ===")
+        for k in sorted(emb):
+            print(f"  {k}: {emb[k]:.6g}")
+        print("\n=== Absolute deltas (recomputed - embedded) ===")
+        for k in metrics:
+            if k not in emb:
+                continue
+            print(f"  {k}: {metrics[k] - emb[k]:+.6g}")
+
+    if VERIFIED_JSON.is_file():
+        doc = json.loads(VERIFIED_JSON.read_text())
+        ref = doc.get("task1_cmr_val_n1801", {})
+        if ref:
+            print("\n=== metrics_verified.json task1_cmr_val_n1801 (reference snapshot) ===")
+            for k in sorted(ref):
+                print(f"  {k}: {ref[k]}")
 
 
 if __name__ == "__main__":

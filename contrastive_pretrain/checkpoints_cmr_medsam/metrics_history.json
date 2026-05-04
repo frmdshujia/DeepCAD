@@ -1,0 +1,13 @@
+[
+  {
+    "epoch": 0,
+    "train_loss": 2.1598318162842176,
+    "lr": 6.666666666666667e-06,
+    "auc/composite_ischemic_hd": 0.6550411134522723,
+    "auc/prevalent_I21": 0.6670964058745663,
+    "mean_auc": 0.6610687596634193,
+    "mae/LV ejection fraction": 5.1939239501953125,
+    "mae/LV end diastolic volume": 23.91310691833496,
+    "mae/LV end systolic volume": 14.415141105651855
+  }
+]

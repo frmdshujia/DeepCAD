@@ -21,6 +21,9 @@ Usage:
   CUDA_VISIBLE_DEVICES=0 python contrastive_pretrain/train_cmr_v3.py \\
       --data_dir /data/home/shujia/UKB/CMRI/preprocessed_cmr_v3 \\
       --out_dir  contrastive_pretrain/checkpoints_cmr_v3
+
+External reporting: verify validation metrics with verify_cmr_v3_val_auc.py and/or
+metrics_verified.json in out_dir — do not cite uncorroborated training-log val AUC alone.
 """
 from __future__ import annotations
 
@@ -51,6 +54,15 @@ from contrastive_pretrain.models_cmr_v3 import CMREncoderV3, NUM_FRAMES
 MEDSAM_CKPT = str(ROOT / 'pretrained_weights/hf_cache/'
                    'models--flaviagiammarino--medsam-vit-base/blobs/'
                    'b80a96478503f89e76f1f7bbba50cfcd4ec9e7467f0d5185310216b33946ec9c')
+
+SAM2_CKPT_DIR = ROOT / 'pretrained_weights' / 'sam2'
+BACKBONE_CKPTS = {
+    'medsam':         MEDSAM_CKPT,
+    'sam2_tiny':      str(SAM2_CKPT_DIR / 'sam2.1_hiera_tiny.pt'),
+    'sam2_small':     str(SAM2_CKPT_DIR / 'sam2.1_hiera_small.pt'),
+    'medsam2_latest': str(SAM2_CKPT_DIR / 'MedSAM2_latest.pt'),
+    'medsam2_heart':  str(SAM2_CKPT_DIR / 'MedSAM2_US_Heart.pt'),
+}
 
 TRAIN_CSV = str(HERE / 'task_reports/task1_cmr_train.csv')
 VAL_CSV   = str(HERE / 'task_reports/task1_cmr_val.csv')
@@ -140,15 +152,18 @@ class CMRDatasetV3(Dataset):
 
 # ── Loss ──────────────────────────────────────────────────────────────────────
 def task_loss(cls_preds, reg_preds, cls_labels, reg_labels, reg_mask,
-              pos_weights, reg_norm, device):
+              pos_weights, reg_norm, device, label_smooth: float = 0.0):
     cls_losses = []
     for i, pred in enumerate(cls_preds):
         valid = cls_labels[:, i] >= 0
         if not valid.any():
             continue
         pw = torch.tensor([pos_weights[i]], dtype=torch.float32, device=device)
+        tgt = cls_labels[valid, i]
+        if label_smooth > 0:
+            tgt = tgt * (1 - label_smooth) + label_smooth * 0.5
         cls_losses.append(
-            nn.BCEWithLogitsLoss(pos_weight=pw)(pred[valid], cls_labels[valid, i]))
+            nn.BCEWithLogitsLoss(pos_weight=pw)(pred[valid], tgt))
     l_cls = torch.stack(cls_losses).mean() if cls_losses else torch.tensor(0., device=device)
 
     reg_losses = []
@@ -241,21 +256,44 @@ def main():
                         help='Used during frozen-backbone phase; halved to 8 when backbone unfreezes')
     parser.add_argument('--unfreeze_batch_size', type=int, default=8,
                         help='Batch size after backbone unfreeze (grad-checkpoint active)')
-    parser.add_argument('--enc_lr',        type=float, default=1e-5)
+    parser.add_argument('--enc_lr',        type=float, default=1e-5,
+                        help='Backbone LR after unfreeze — 10x lower than head: '
+                             'allows high-layer cardiac adaptation without '
+                             'overwriting low-layer pretrained features on limited data')
     parser.add_argument('--head_lr',       type=float, default=1e-4)
     parser.add_argument('--weight_decay',  type=float, default=0.1)
     parser.add_argument('--warmup_epochs', type=int,   default=3)
-    parser.add_argument('--freeze_epochs', type=int,   default=5,
-                        help='Freeze MedSAM backbone for first N epochs')
-    parser.add_argument('--patience',      type=int,   default=10)
-    parser.add_argument('--out_dir',       type=str,
-                        default=str(HERE / 'checkpoints_cmr_v3'))
-    parser.add_argument('--medsam_ckpt',   type=str,   default=MEDSAM_CKPT)
+    parser.add_argument('--freeze_epochs', type=int,   default=3,
+                        help='Freeze backbone only for head init stability, not to '
+                             'preserve MedSAM priors')
+    parser.add_argument('--patience',      type=int,   default=8)
+    parser.add_argument('--label_smooth',  type=float, default=0.05,
+                        help='Label smoothing alpha for BCE cls loss (0=off)')
+    parser.add_argument('--frame_dropout', type=float, default=0.15,
+                        help='Prob to zero out each frame during training (0=off)')
+    parser.add_argument('--attn_dropout',  type=float, default=0.1,
+                        help='Dropout in T1CineFusion cross-attention')
+    parser.add_argument('--backbone',      type=str,   default='medsam2_heart',
+                        choices=list(BACKBONE_CKPTS.keys()),
+                        help='Which image encoder backbone to use')
+    parser.add_argument('--backbone_ckpt', type=str,   default=None,
+                        help='Override checkpoint path for backbone (default: auto)')
+    parser.add_argument('--out_dir',       type=str,   default=None,
+                        help='Output dir (default: checkpoints_cmr_<backbone>)')
+    parser.add_argument('--medsam_ckpt',   type=str,   default=MEDSAM_CKPT,
+                        help='Legacy: MedSAM ckpt path, used only when --backbone medsam')
     parser.add_argument('--resume',        action='store_true')
     parser.add_argument('--smoke_test',    action='store_true')
     args = parser.parse_args()
 
     device  = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # resolve out_dir and backbone ckpt
+    if args.out_dir is None:
+        args.out_dir = str(HERE / f'checkpoints_cmr_{args.backbone}')
+    if args.backbone_ckpt is None:
+        args.backbone_ckpt = BACKBONE_CKPTS[args.backbone]
+
     out_dir = pathlib.Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -274,17 +312,21 @@ def main():
 
     train_loader, val_loader = make_loaders(args.batch_size)
 
-    print(f'[config] enc_lr={args.enc_lr}  wd={args.weight_decay}  '
-          f'bs={args.batch_size}  freeze_epochs={args.freeze_epochs}  '
-          f'warmup={args.warmup_epochs}')
+    print(f'[config] backbone={args.backbone}  enc_lr={args.enc_lr}  '
+          f'wd={args.weight_decay}  bs={args.batch_size}  '
+          f'freeze_epochs={args.freeze_epochs}  warmup={args.warmup_epochs}')
+    print(f'[config] backbone_ckpt={args.backbone_ckpt}')
+    print(f'[config] out_dir={args.out_dir}')
 
     # ── model ──
     encoder = CMREncoderV3(
         proj_dim=256, embed_dim=768,
         spatial_pool=args.spatial_pool,
         transformer_heads=8, transformer_depth=2,
-        medsam_ckpt=args.medsam_ckpt,
+        backbone=args.backbone,
+        backbone_ckpt=args.backbone_ckpt,
         freeze_backbone=False,
+        attn_dropout=args.attn_dropout,
     ).to(device)
     head = TaskHead(in_dim=768, n_cls=len(CLS_COLS), n_reg=len(REG_COLS)).to(device)
 
@@ -346,12 +388,21 @@ def main():
             reg_gt = batch['reg_labels'].to(device)
             reg_mk = batch['reg_mask'].to(device)
 
+            # frame dropout: randomly zero out individual frames during training
+            if args.frame_dropout > 0:
+                # mask shape (B, F, 1, 1, 1): 1=keep, 0=zero
+                keep = (torch.rand(
+                    cmr.shape[0], cmr.shape[1], 1, 1, 1,
+                    device=device) > args.frame_dropout).float()
+                cmr = cmr * keep
+
             optimizer.zero_grad()
             with torch.cuda.amp.autocast():
                 _, z = encoder(cmr)
                 cls_out, reg_out = head(z)
                 loss = task_loss(cls_out, reg_out, cls_gt, reg_gt, reg_mk,
-                                 POS_WEIGHTS, REG_NORM, device)
+                                 POS_WEIGHTS, REG_NORM, device,
+                                 label_smooth=args.label_smooth)
 
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)

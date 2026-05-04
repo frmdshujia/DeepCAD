@@ -17,11 +17,15 @@ preprocess_cmr_v3.py  —  生成 (16, 224, 224) float16 npy
   {t1_valid: bool, sax_n_slices: int, sax_used: [b_idx, m_idx, a_idx]}
 
 CLI:
-  python preprocess_cmr_v3.py \
-      --eid_file contrastive_pretrain/task_reports/task1_cmr_train.csv \
-      --cmr_dir  /data/home/shujia/UKB/CMRI/downloaded \
-      --out_dir  /data/home/shujia/UKB/CMRI/preprocessed_cmr_v3 \
+  python preprocess_cmr_v3.py \\
+      --eid_file contrastive_pretrain/task_reports/task1_cmr_train.csv \\
+      --cmr_dir  /data/home/shujia/UKB/CMRI/downloaded \\
+      --out_dir  /data/home/shujia/UKB/CMRI/preprocessed_cmr_v3 \\
       --num_workers 8
+
+Requires: numpy, pydicom, pillow  (e.g. pip install pydicom)
+
+After bulk runs, validate with verify_preprocessed_cmr_v3_format.py.
 """
 from __future__ import annotations
 import argparse, io, json, os, zipfile

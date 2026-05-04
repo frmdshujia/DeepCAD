@@ -49,6 +49,111 @@ from contrastive_pretrain.models_cmr import (
     load_medsam_vision_encoder_weights,
 )
 
+try:
+    from sam2.modeling.backbones.hieradet import Hiera as _Hiera
+    _HIERA_AVAILABLE = True
+except ImportError:
+    _Hiera = None
+    _HIERA_AVAILABLE = False
+
+# Hiera backbone configs (from sam2.1 yaml files)
+# out_channels = last-stage output channels (backbone_channel_list[0])
+_HIERA_CONFIGS = {
+    'sam2_tiny': dict(
+        embed_dim=96, num_heads=1,
+        stages=(1, 2, 7, 2), global_att_blocks=(5, 7, 9),
+        window_pos_embed_bkg_spatial_size=(7, 7),
+        out_channels=768,
+    ),
+    'sam2_small': dict(
+        embed_dim=96, num_heads=1,
+        stages=(1, 2, 11, 2), global_att_blocks=(7, 10, 13),
+        window_pos_embed_bkg_spatial_size=(7, 7),
+        out_channels=768,
+    ),
+    # MedSAM2 variants are Hiera Tiny fine-tuned on medical images
+    'medsam2_latest': dict(
+        embed_dim=96, num_heads=1,
+        stages=(1, 2, 7, 2), global_att_blocks=(5, 7, 9),
+        window_pos_embed_bkg_spatial_size=(7, 7),
+        out_channels=768,
+    ),
+    'medsam2_heart': dict(
+        embed_dim=96, num_heads=1,
+        stages=(1, 2, 7, 2), global_att_blocks=(5, 7, 9),
+        window_pos_embed_bkg_spatial_size=(7, 7),
+        out_channels=768,
+    ),
+}
+
+
+class _MedSAMBackbone(nn.Module):
+    """MedSAM ViT-B wrapper — normalises output to (B, C, H, W)."""
+    out_channels = 768
+
+    def __init__(self, img_size: int, ckpt: Optional[str]):
+        super().__init__()
+        self.vit = SamVisionEncoderViTB(
+            img_size=img_size, patch_size=16, in_chans=3,
+            embed_dim=768, depth=12, num_heads=12, mlp_ratio=4.0,
+        )
+        if ckpt is not None:
+            load_medsam_vision_encoder_weights(
+                self.vit, ckpt, strict=True, verbose=True)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        feat = self.vit(x)                  # (B, H, W, C)
+        return feat.permute(0, 3, 1, 2)     # (B, C, H, W)
+
+
+class _HieraBackbone(nn.Module):
+    """SAM2 Hiera trunk wrapper — loads weights and returns (B, C, H, W) last stage."""
+
+    def __init__(self, cfg_name: str, ckpt: Optional[str]):
+        super().__init__()
+        assert _HIERA_AVAILABLE, 'sam2 package not found; run setup_sam2.sh first'
+        cfg = _HIERA_CONFIGS[cfg_name]
+        self.out_channels = cfg['out_channels']
+        self.trunk = _Hiera(
+            embed_dim=cfg['embed_dim'],
+            num_heads=cfg['num_heads'],
+            stages=cfg['stages'],
+            global_att_blocks=cfg['global_att_blocks'],
+            window_pos_embed_bkg_spatial_size=cfg['window_pos_embed_bkg_spatial_size'],
+            return_interm_layers=True,
+        )
+        if ckpt is not None:
+            state = torch.load(ckpt, map_location='cpu')
+            state = state.get('model', state)
+            trunk_state = {
+                k.replace('image_encoder.trunk.', ''): v
+                for k, v in state.items()
+                if k.startswith('image_encoder.trunk.')
+            }
+            missing, unexpected = self.trunk.load_state_dict(trunk_state, strict=False)
+            if missing:
+                print(f'  [backbone] {cfg_name}: {len(missing)} missing keys (ok if minor)')
+            print(f'  [backbone] {cfg_name} loaded from {ckpt}')
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        feats = self.trunk(x)   # list of (B, C, H, W) per stage
+        return feats[-1]        # last stage — highest semantic, (B, C, H, W)
+
+
+def build_backbone(name: str, ckpt: Optional[str], img_size: int = 224) -> nn.Module:
+    """
+    Factory: return a backbone module that takes (B, 3, H, W) and returns (B, C, H, W).
+
+    Supported names: 'medsam', 'sam2_tiny', 'sam2_small',
+                     'medsam2_latest', 'medsam2_heart'
+    """
+    if name == 'medsam':
+        return _MedSAMBackbone(img_size=img_size, ckpt=ckpt)
+    if name in _HIERA_CONFIGS:
+        return _HieraBackbone(cfg_name=name, ckpt=ckpt)
+    raise ValueError(f'Unknown backbone: {name!r}. '
+                     f'Choose from: medsam, {", ".join(_HIERA_CONFIGS)}')
+
 
 # ── Frame metadata ─────────────────────────────────────────────────────────────
 FRAME_META: list[tuple[int, int]] = [
@@ -185,25 +290,27 @@ class CMREncoderV3(nn.Module):
         transformer_heads: int = 8,
         transformer_depth: int = 2,
         transformer_dropout: float = 0.1,
-        medsam_ckpt: Optional[str] = None,
+        attn_dropout: float = 0.0,
+        backbone: str = 'medsam',
+        backbone_ckpt: Optional[str] = None,
         freeze_backbone: bool = False,
         grad_checkpoint: bool = False,
+        # legacy arg — kept for backward compat, ignored if backbone != 'medsam'
+        medsam_ckpt: Optional[str] = None,
     ):
         super().__init__()
-        self.num_frames    = NUM_FRAMES
-        self.embed_dim     = embed_dim
-        self.spatial_pool  = spatial_pool
+        self.num_frames      = NUM_FRAMES
+        self.embed_dim       = embed_dim
+        self.spatial_pool    = spatial_pool
         self.grad_checkpoint = grad_checkpoint
         P2 = spatial_pool * spatial_pool
 
-        # ── shared backbone ──
-        self.backbone = SamVisionEncoderViTB(
-            img_size=img_size, patch_size=16, in_chans=3,
-            embed_dim=embed_dim, depth=12, num_heads=12, mlp_ratio=4.0,
-        )
-        if medsam_ckpt is not None:
-            load_medsam_vision_encoder_weights(
-                self.backbone, medsam_ckpt, strict=True, verbose=True)
+        # resolve ckpt: backbone_ckpt takes priority; fall back to medsam_ckpt for medsam
+        ckpt = backbone_ckpt if backbone_ckpt is not None else (
+            medsam_ckpt if backbone == 'medsam' else None)
+
+        # ── shared backbone (unified BCHW output) ──
+        self.backbone = build_backbone(backbone, ckpt, img_size=img_size)
         if freeze_backbone:
             for p in self.backbone.parameters():
                 p.requires_grad_(False)
@@ -227,7 +334,8 @@ class CMREncoderV3(nn.Module):
         nn.init.trunc_normal_(self.cls_token, std=0.02)
 
         # ── T1-Cine fusion (before main transformer) ──
-        self.t1_cine_fusion = T1CineFusion(dim=embed_dim, num_heads=4)
+        self.t1_cine_fusion = T1CineFusion(dim=embed_dim, num_heads=4,
+                                           dropout=attn_dropout)
 
         # ── ED→ES difference tokens ──
         # One learnable marker shared by all delta tokens (identifies "I am a Δ token")
@@ -290,12 +398,12 @@ class CMREncoderV3(nn.Module):
         if self.grad_checkpoint and x_flat.requires_grad:
             feat = checkpoint(self.backbone, x_flat, use_reentrant=False)
         else:
-            feat = self.backbone(x_flat)             # (B*F, 14, 14, 768)
+            feat = self.backbone(x_flat)        # (B*F, C, H, W) — all backbones normalised
 
         # spatial pool → region tokens
         P = self.spatial_pool
-        feat = self.spatial_adapt(feat.permute(0, 3, 1, 2))   # (B*F, 768, P, P)
-        feat = feat.permute(0, 2, 3, 1).reshape(B * F_, P * P, -1)
+        feat = self.spatial_adapt(feat)                              # (B*F, C, P, P)
+        feat = feat.permute(0, 2, 3, 1).reshape(B * F_, P * P, -1) # (B*F, P², C)
 
         # positional embeddings: region + view + time
         feat = feat + self.region_emb

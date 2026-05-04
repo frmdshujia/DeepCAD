@@ -1,0 +1,60 @@
+{
+  "title": "CMR v3 Task1 metrics — recomputed on server (authoritative)",
+  "checkpoint_files": ["best.pth", "last.pth"],
+  "saved_best_epoch_training_log": 40,
+  "verification_date": "2026-05-03",
+  "conda_env": "modeltrain",
+  "pytorch": "2.1.0+cu121",
+  "methodology": "Same evaluate() path as contrastive_pretrain/train_cmr_v3.py; ROC-AUC from logits via sklearn.metrics.roc_auc_score; regression MAE after denorm from REG_NORM.",
+  "deprecated": {
+    "metrics_history_DEPRECATED_untrusted_20260430.json": "Original per-epoch training log val curve (~mean_auc 0.81–0.85). Disagreed with independent recomputation on identical weights — do not cite.",
+    "embedded_ckpt_metrics_before_fix": "best.pth field metrics previously mirrored that inflated curve (~0.849); patched 2026-05-03."
+  },
+  "notes": [
+    "As of 2026-05-03: all 1807 task1_cmr_test EIDs have preprocessed_cmr_v3/{eid}.npy+json (1521 filled via preprocess_cmr_v3.py); verify with verify_preprocessed_cmr_v3_format.py.",
+    "task1_cmr_test_subset_n286_only metrics below are stale (eval before bulk preprocess); rerun eval_cmr_task1_ckpts.py for full-test model metrics.",
+    "train vs val gap is large for v3 (strong train fit vs weaker val); compare with v2 in metrics_verified_train_val_comparison summary.",
+    "For reproducibility debates, rerun contrastive_pretrain/eval_cmr_task1_ckpts.py."
+  ],
+  "preprocessed_cmr_v3_test_fill": {
+    "date": "2026-05-03",
+    "eids_added": 1521,
+    "eid_list_file": "contrastive_pretrain/task_reports/task1_cmr_test_eids_missing_v3.txt",
+    "zip_source": "/data/home/shujia/UKB/CMRI/downloaded ({eid}_20208_2_0.zip + _20209_2_0.zip)",
+    "script": "contrastive_pretrain/preprocess_cmr_v3.py",
+    "verify_script": "contrastive_pretrain/verify_preprocessed_cmr_v3_format.py",
+    "brightness_cohort_legacy286_mean_std": [0.2906, 0.026],
+    "brightness_cohort_new1521_mean_std": [0.2886, 0.0263]
+  },
+  "task1_cmr_train_n14472": {
+    "mean_auc": 0.9569,
+    "auc/composite_ischemic_hd": 0.9358,
+    "auc/prevalent_I21": 0.978,
+    "mae/LV ejection fraction": 2.853,
+    "mae/LV end diastolic volume": 8.023,
+    "mae/LV end systolic volume": 4.778
+  },
+  "task1_cmr_val_n1801": {
+    "mean_auc": 0.685056496493057,
+    "auc/composite_ischemic_hd": 0.690647879928697,
+    "auc/prevalent_I21": 0.679465113057417,
+    "mae/LV ejection fraction": 3.593052387237549,
+    "mae/LV end diastolic volume": 9.002861022949219,
+    "mae/LV end systolic volume": 6.244596004486084
+  },
+  "task1_cmr_test_subset_n286_only": {
+    "mean_auc": 0.684878164958058,
+    "auc/composite_ischemic_hd": 0.651323084698084,
+    "auc/prevalent_I21": 0.718433245218032,
+    "mae/LV ejection fraction": 3.568126916885376,
+    "mae/LV end diastolic volume": 9.829837799072266,
+    "mae/LV end systolic volume": 5.5168561935424805
+  },
+  "v2_reference_same_splits_checkpoints_cmr_v2_aug_freeze5": {
+    "train_mean_auc": 0.7759,
+    "val_mean_auc": 0.7368434291846967,
+    "train_val_gap_mean_auc": 0.03905657081530329,
+    "comment": "4-frame model; val metrics matched ckpt embedding — training log trusted for v2."
+  },
+  "v3_train_val_gap_mean_auc": 0.271843503506943
+}
