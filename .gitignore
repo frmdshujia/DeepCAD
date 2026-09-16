@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+outputs/
+weights/
+data/
+manifests/*.csv
+*.pt
+*.pth
+*.ckpt
+*.npy
+*.npz
+*.log
+.DS_Store

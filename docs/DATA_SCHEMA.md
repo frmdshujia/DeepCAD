@@ -1,0 +1,44 @@
+# Data manifest schemas
+
+All manifests are UTF-8 CSV files. Every `--manifest` option accepts either one
+combined CSV or multiple split-specific CSVs separated by spaces. Paths may be
+absolute or relative to their source CSV file. Participant identifiers are used
+only to enforce grouping and disjointness; they must not encode outcome labels.
+
+## CMR teacher manifest
+
+Required columns:
+
+- `eid`: participant identifier.
+- `split`: `train`, `val`, or `test`.
+- `cmr_path`: NumPy file with shape `(16, 224, 224)` and values in `[0, 1]`.
+- `t1_available`: Boolean observation flag; do not infer it from a label.
+- one column per classification or regression target named on the command line.
+
+The 16-frame order is fixed: six LAX cine frames (2Ch and 4Ch, each at ED,
+mid-systole and ES), nine SAX cine frames (base, mid and apex at the same three
+phases), followed by native T1. Missing targets may be blank/NaN and are masked.
+
+## Stage I retinal–CMR manifest
+
+Required columns: `eid`, `split`, and `fundus_path` (the historical name
+`fundus_image_path` is accepted as an alias). Multiple retinal images may belong
+to one participant. The participant sampler selects one image per person
+per epoch so that another eye from the same person cannot become an InfoNCE
+negative. CMR embeddings are supplied separately as an `(N, 768)` `.npy` file
+and an aligned `(N,)` participant-ID `.npy` file.
+
+If `--external-validation-manifest` is passed, it must contain an `eid` column.
+Training aborts if any identifier occurs in both manifests.
+
+## Stage II manifest
+
+Required columns: `eid`, `split`, `fundus_path`, and binary `label`.
+
+## Stage III manifest
+
+Required columns: `eid`, `split`, binary `label`, and the columns supplied to
+`--feature-columns`. Defaults are `retinal_score`, `age`, `sex`, `hypertension`,
+`diabetes`, `smoking`, `dyslipidemia`, and `family_history`. Missing values are
+median-imputed using the training split only. Means and standard deviations are
+also fitted on the training split only and stored in the checkpoint.
