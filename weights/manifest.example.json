@@ -1,0 +1,40 @@
+{
+  "release": "v2",
+  "checkpoints": [
+    {
+      "filename": "deepcad_cmr_teacher_v2.pt",
+      "stage": "cmr_teacher",
+      "url": "PENDING",
+      "bytes": "PENDING",
+      "sha256": "PENDING"
+    },
+    {
+      "filename": "deepcad_stage1_retinal_encoder_v2.pt",
+      "stage": "stage1_alignment",
+      "url": "PENDING",
+      "bytes": "PENDING",
+      "sha256": "PENDING"
+    },
+    {
+      "filename": "deepcad_stage2_sdpp_v2.pt",
+      "stage": "stage2_sdpp",
+      "url": "PENDING",
+      "bytes": "PENDING",
+      "sha256": "PENDING"
+    },
+    {
+      "filename": "deepcad_stage2_shcc_v2.pt",
+      "stage": "stage2_shcc",
+      "url": "PENDING",
+      "bytes": "PENDING",
+      "sha256": "PENDING"
+    },
+    {
+      "filename": "deepcad_stage3_fusion_v2.pt",
+      "stage": "stage3_clinical_fusion",
+      "url": "PENDING",
+      "bytes": "PENDING",
+      "sha256": "PENDING"
+    }
+  ]
+}

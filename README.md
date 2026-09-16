@@ -69,6 +69,17 @@ it from its upstream repository in the same environment. Pretrained RETFound and
 MedSAM2-US-Heart weights are supplied by their respective distributors and are
 passed explicitly on the command line; they are not redistributed here.
 
+## Model weights
+
+The repository reserves stable filenames under [`weights/`](weights/README.md)
+for the DeepCAD checkpoints that will accompany the final release. The directory
+currently contains metadata placeholders only; it does not contain dummy model
+files. When the final checkpoints are available, publish them as GitHub Release
+assets or through Git LFS, then replace the `PENDING` entries in
+`weights/manifest.example.json` with immutable download URLs, file sizes, and
+SHA256 checksums. Third-party RETFound and MedSAM2-US-Heart checkpoints must be
+obtained from their original distributors.
+
 ## Minimal commands
 
 The following examples use versioned output directories to prevent accidental
