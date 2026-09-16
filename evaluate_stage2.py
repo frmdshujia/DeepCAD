@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections import defaultdict
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -21,10 +23,14 @@ def main() -> None:
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--split", default="test")
     parser.add_argument("--output-json", required=True)
+    parser.add_argument("--acknowledge-final-test", action="store_true")
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--device", default="auto")
     args = parser.parse_args()
+    if args.split == "test" and not args.acknowledge_final_test:
+        raise RuntimeError(
+            "Final test evaluation requires --acknowledge-final-test.")
 
     device = choose_device(args.device)
     checkpoint = torch.load(args.checkpoint, map_location="cpu")
@@ -36,18 +42,32 @@ def main() -> None:
     loader = DataLoader(
         dataset, batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=device.type == "cuda")
-    labels, probabilities = [], []
+    labels_by_eid = {}
+    probabilities_by_eid = defaultdict(list)
     with torch.no_grad():
         for batch in loader:
             logits = model(batch["image"].to(device))
-            labels.append(batch["label"].numpy())
-            probabilities.append(logits.sigmoid().cpu().numpy())
-    labels = np.concatenate(labels)
-    probabilities = np.concatenate(probabilities)
-    result = {"split": args.split, "n": int(len(labels)),
+            batch_labels = batch["label"].numpy()
+            batch_probabilities = logits.sigmoid().cpu().numpy()
+            for eid, label, probability in zip(
+                    batch["eid"].tolist(), batch_labels, batch_probabilities):
+                eid = int(eid)
+                if eid in labels_by_eid and labels_by_eid[eid] != int(label):
+                    raise ValueError(f"Conflicting labels for EID {eid}")
+                labels_by_eid[eid] = int(label)
+                probabilities_by_eid[eid].append(float(probability))
+    eids = sorted(labels_by_eid)
+    labels = np.asarray([labels_by_eid[eid] for eid in eids])
+    probabilities = np.asarray([
+        np.mean(probabilities_by_eid[eid]) for eid in eids])
+    result = {"split": args.split, "n_participants": int(len(labels)),
+              "aggregation": "mean eye-level probability within EID",
               "auroc": safe_auroc(labels, probabilities)}
-    with open(args.output_json, "w") as handle:
-        json.dump(result, handle, indent=2, sort_keys=True)
+    output = Path(args.output_json)
+    if output.exists():
+        raise FileExistsError(f"Refusing to overwrite evaluation result: {output}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(result, indent=2, sort_keys=True))
     print(json.dumps(result, indent=2, sort_keys=True))
 
 

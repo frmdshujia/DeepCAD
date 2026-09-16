@@ -1,0 +1,20 @@
+{
+  "classification_4": [
+    "prevalent_I21",
+    "prevalent_I25",
+    "composite_cardiomyopathy_hf",
+    "prevalent_I48"
+  ],
+  "regression_22": [
+    "LVEF", "LVEDV", "LVESV", "LVSV", "LV_CO", "LVM", "LV_WT",
+    "GLS", "GCS", "GRS", "RVEF", "RVEDV", "RVESV", "RVSV",
+    "LAEF", "LA_max", "LA_min", "LASV", "RAEF", "RA_max",
+    "RA_min", "RASV"
+  ],
+  "legacy_g4_regression_8": [
+    "GLS", "GCS", "GRS", "LVEF", "LV_CO", "RVEF", "LVSV", "RVSV"
+  ],
+  "fusion_modes": ["global_only", "sax_t1", "hierarchical"],
+  "stage1_primary_policy": "all participants with explicit T1 mask",
+  "stage1_t1_sensitivity": "require_t1"
+}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Iterable
 
@@ -9,6 +10,14 @@ import pandas as pd
 import torch
 
 from deepcad.manifest import ManifestInput, read_manifest
+
+
+def autocast_context(device: torch.device, amp_dtype: str):
+    """Use CUDA autocast when requested and a no-op context elsewhere."""
+    if device.type != "cuda" or amp_dtype == "none":
+        return nullcontext()
+    dtype = torch.bfloat16 if amp_dtype == "bfloat16" else torch.float16
+    return torch.autocast(device_type="cuda", dtype=dtype)
 
 
 def parse_columns(value: str) -> list[str]:
@@ -47,6 +56,27 @@ def regression_statistics(
     mean = train.mean(axis=0).to_numpy(np.float32)
     std = train.std(axis=0).replace(0, 1).fillna(1).to_numpy(np.float32)
     return mean, std
+
+
+def classification_pos_weights(
+    manifest: ManifestInput, columns: list[str]
+) -> np.ndarray:
+    """Compute per-task negative/positive ratios from the train split only."""
+    if not columns:
+        return np.empty(0, np.float32)
+    frame = read_manifest(manifest)
+    targets = frame.loc[frame["split"] == "train", columns].apply(
+        pd.to_numeric, errors="coerce")
+    weights = []
+    for column in columns:
+        values = targets[column].dropna().to_numpy()
+        positive = int(np.sum(values == 1))
+        negative = int(np.sum(values == 0))
+        if positive == 0:
+            raise ValueError(
+                f"Classification target {column!r} has no positive training cases.")
+        weights.append(negative / positive)
+    return np.asarray(weights, dtype=np.float32)
 
 
 def assert_disjoint_participants(

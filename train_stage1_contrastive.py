@@ -14,8 +14,11 @@ from deepcad.data import Stage1ContrastiveDataset, UniqueParticipantSampler
 from deepcad.losses import symmetric_info_nce
 from deepcad.models import RETFoundFundusEncoder
 from deepcad.training.common import (
-    assert_disjoint_participants, choose_device, dump_run_config,
+    assert_disjoint_participants, autocast_context, choose_device, dump_run_config,
     make_output_dir, save_checkpoint, trainable_parameters,
+)
+from deepcad.training.alignment import (
+    alignment_metrics, collect_participant_embeddings,
 )
 from deepcad.utils import seed_everything
 
@@ -37,6 +40,9 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--projection-dim", type=int, default=128)
     parser.add_argument("--unfreeze-last-blocks", type=int, default=0)
     parser.add_argument("--temperature", type=float, default=0.07)
+    parser.add_argument(
+        "--require-t1", action="store_true",
+        help="Sensitivity analysis restricted to participants with observed T1")
     parser.add_argument("--patience", type=int, default=8)
     parser.add_argument("--amp-dtype", choices=["bfloat16", "float16", "none"],
                         default="bfloat16")
@@ -46,12 +52,12 @@ def arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def run_epoch(fundus_encoder, cmr_projector, logit_scale, loader, sampler,
-              device, optimizer, epoch: int, amp_dtype: str) -> float:
-    training = optimizer is not None
-    fundus_encoder.train(training)
-    cmr_projector.train(training)
-    sampler.set_epoch(epoch if training else 0)
+def run_training_epoch(fundus_encoder, cmr_projector, logit_scale, loader,
+                       sampler, device, optimizer, epoch: int,
+                       amp_dtype: str) -> float:
+    fundus_encoder.train(True)
+    cmr_projector.train(True)
+    sampler.set_epoch(epoch)
     total_loss = 0.0
     total_items = 0
     for batch in loader:
@@ -60,19 +66,15 @@ def run_epoch(fundus_encoder, cmr_projector, logit_scale, loader, sampler,
             raise RuntimeError("Duplicate participant within an InfoNCE batch.")
         images = batch["image"].to(device)
         cmr = batch["cmr_embedding"].to(device)
-        enabled = device.type == "cuda" and amp_dtype != "none"
-        dtype = torch.bfloat16 if amp_dtype == "bfloat16" else torch.float16
-        with torch.set_grad_enabled(training), torch.autocast(
-                device_type=device.type, dtype=dtype, enabled=enabled):
+        with autocast_context(device, amp_dtype):
             fundus_projection, _ = fundus_encoder(images)
             cmr_projection = F.normalize(cmr_projector(cmr), dim=-1)
             temperature = logit_scale.exp().clamp(max=100.0).reciprocal()
             loss = symmetric_info_nce(
                 fundus_projection, cmr_projection, temperature)
-            if training:
-                optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
         count = images.shape[0]
         total_loss += float(loss.detach()) * count
         total_items += count
@@ -89,18 +91,18 @@ def main() -> None:
     dump_run_config(output, args)
 
     train_dataset = Stage1ContrastiveDataset(
-        args.manifest, "train", args.cmr_embeddings, args.cmr_eids, True)
+        args.manifest, "train", args.cmr_embeddings, args.cmr_eids, True,
+        require_t1=args.require_t1)
     validation_dataset = Stage1ContrastiveDataset(
-        args.manifest, "val", args.cmr_embeddings, args.cmr_eids, False)
+        args.manifest, "val", args.cmr_embeddings, args.cmr_eids, False,
+        require_t1=args.require_t1)
     train_sampler = UniqueParticipantSampler(train_dataset, seed=args.seed)
-    validation_sampler = UniqueParticipantSampler(
-        validation_dataset, seed=args.seed)
     train_loader = DataLoader(
         train_dataset, batch_size=args.batch_size, sampler=train_sampler,
         num_workers=args.workers, pin_memory=device.type == "cuda", drop_last=True)
     validation_loader = DataLoader(
-        validation_dataset, batch_size=args.batch_size,
-        sampler=validation_sampler, num_workers=args.workers,
+        validation_dataset, batch_size=args.batch_size, shuffle=False,
+        num_workers=args.workers,
         pin_memory=device.type == "cuda")
 
     fundus_encoder = RETFoundFundusEncoder(
@@ -124,14 +126,20 @@ def main() -> None:
     best = math.inf
     stale = 0
     for epoch in range(args.epochs):
-        train_loss = run_epoch(
+        train_loss = run_training_epoch(
             fundus_encoder, cmr_projector, logit_scale, train_loader,
             train_sampler, device, optimizer, epoch, args.amp_dtype)
-        validation_loss = run_epoch(
-            fundus_encoder, cmr_projector, logit_scale, validation_loader,
-            validation_sampler, device, None, epoch, args.amp_dtype)
+        _, val_fundus, val_cmr, _, val_eye_counts = collect_participant_embeddings(
+            fundus_encoder, cmr_projector, validation_loader, device,
+            args.amp_dtype)
+        validation_metrics = alignment_metrics(
+            val_fundus, val_cmr, logit_scale)
+        validation_metrics["mean_eyes_per_participant"] = float(
+            val_eye_counts.mean())
+        validation_loss = validation_metrics["infonce"]
         print(f"epoch={epoch + 1} train_loss={train_loss:.6f} "
               f"val_loss={validation_loss:.6f} "
+              f"val_f2c_top1={validation_metrics['fundus_to_cmr_top1']:.4f} "
               f"logit_scale={logit_scale.exp().clamp(max=100).item():.4f}",
               flush=True)
         payload = dict(
@@ -140,6 +148,8 @@ def main() -> None:
             cmr_projector=cmr_projector.state_dict(),
             logit_scale=logit_scale.detach().cpu(),
             validation_loss=validation_loss,
+            validation_metrics=validation_metrics,
+            require_t1=args.require_t1,
             encoder_config={"adapter_dim": args.adapter_dim,
                             "projection_dim": args.projection_dim})
         save_checkpoint(output / "last.pt", **payload)

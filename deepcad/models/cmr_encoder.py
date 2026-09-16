@@ -319,15 +319,23 @@ class HierarchicalCineT1Fusion(nn.Module):
             torch.cat([lax_updated, sax_updated], dim=1))
 
         # Cine <- T1 and T1 <- Cine.
-        cine_updated, t1_updated = self.cine_t1(cine, t1_tokens)
-        if t1_available is not None:
+        if t1_available is None:
+            cine_updated, t1_updated = self.cine_t1(cine, t1_tokens)
+        else:
             observed = t1_available.to(dtype=torch.bool, device=cine.device)
-            observed = observed[:, None, None]
-            # Missing-T1 subjects bypass cine/T1 fusion. Their cine stream is
-            # preserved and no placeholder T1 representation is propagated.
-            cine_updated = torch.where(observed, cine_updated, cine)
-            t1_updated = torch.where(
-                observed, t1_updated, torch.zeros_like(t1_updated))
+            observed_indices = observed.nonzero(as_tuple=False).flatten()
+            # Missing-T1 subjects never enter cine/T1 attention. This is a true
+            # routed subset, not an attention result discarded after the call.
+            cine_updated = cine
+            t1_updated = torch.zeros_like(t1_tokens)
+            if observed_indices.numel():
+                observed_cine, observed_t1 = self.cine_t1(
+                    cine.index_select(0, observed_indices),
+                    t1_tokens.index_select(0, observed_indices))
+                cine_updated = cine_updated.index_copy(
+                    0, observed_indices, observed_cine)
+                t1_updated = t1_updated.index_copy(
+                    0, observed_indices, observed_t1)
         lax_final = cine_updated[:, :n_lax, :]
         sax_final = cine_updated[:, n_lax:, :]
         return lax_final, sax_final, t1_updated
@@ -508,21 +516,36 @@ class CMREncoderV4(nn.Module):
         if C == 1:
             x = x.expand(-1, -1, 3, -1, -1)
 
-        x_flat = x.reshape(B * F_, 3, H, W)
-        if self.grad_checkpoint and self.training:
-            feat = checkpoint(self.backbone, x_flat, use_reentrant=False)
-        else:
-            feat = self.backbone(x_flat)        # (B*F, C, H, W) — all backbones normalised
-
-        # spatial pool → region tokens
         P = self.spatial_pool
-        feat = self.spatial_adapt(feat)                              # (B*F, C, P, P)
-        feat = feat.permute(0, 2, 3, 1).reshape(B * F_, P * P, -1) # (B*F, P², C)
+        def encode_images(images: torch.Tensor) -> torch.Tensor:
+            if self.grad_checkpoint and self.training:
+                encoded = checkpoint(
+                    self.backbone, images, use_reentrant=False)
+            else:
+                encoded = self.backbone(images)
+            encoded = self.spatial_adapt(encoded)
+            return encoded.permute(0, 2, 3, 1).reshape(
+                images.shape[0], P * P, -1)
+
+        # All cine frames are always observed and encoded. T1 is routed through
+        # the backbone only for participants with an observed T1 map.
+        cine_flat = x[:, :T1_FRAME_IDX].reshape(
+            B * T1_FRAME_IDX, 3, H, W)
+        cine_tokens = encode_images(cine_flat).reshape(
+            B, T1_FRAME_IDX, P * P, -1)
+        observed_indices = t1_available.nonzero(as_tuple=False).flatten()
+        t1_tokens_raw = cine_tokens.new_zeros(
+            B, P * P, cine_tokens.shape[-1])
+        if observed_indices.numel():
+            observed_t1_images = x.index_select(
+                0, observed_indices)[:, T1_FRAME_IDX]
+            observed_t1_tokens = encode_images(observed_t1_images)
+            t1_tokens_raw = t1_tokens_raw.index_copy(
+                0, observed_indices, observed_t1_tokens)
+        feat = torch.cat([cine_tokens, t1_tokens_raw[:, None]], dim=1)
 
         # positional embeddings: region + view + time
-        feat = feat + self.region_emb
-        feat = feat.reshape(B, F_, P * P, -1)
-        feat = (feat
+        feat = (feat + self.region_emb
                 + self.view_emb(self.view_ids)[None, :, None, :]
                 + self.time_emb(self.time_ids)[None, :, None, :])
         # feat: (B, 16, P², 768)
@@ -538,11 +561,16 @@ class CMREncoderV4(nn.Module):
             lax, sax, t1 = self.hierarchical_fusion(
                 lax, sax, t1, t1_available=t1_available)
         elif self.fusion_mode == 'sax_t1':
-            sax_original = sax
-            sax_fused, t1_fused = self.t1_cine_fusion(sax, t1)
-            observed = t1_available[:, None, None]
-            sax = torch.where(observed, sax_fused, sax_original)
-            t1 = torch.where(observed, t1_fused, torch.zeros_like(t1_fused))
+            observed_indices = t1_available.nonzero(as_tuple=False).flatten()
+            t1_output = torch.zeros_like(t1)
+            if observed_indices.numel():
+                sax_fused, t1_fused = self.t1_cine_fusion(
+                    sax.index_select(0, observed_indices),
+                    t1.index_select(0, observed_indices))
+                sax = sax.index_copy(0, observed_indices, sax_fused)
+                t1_output = t1_output.index_copy(
+                    0, observed_indices, t1_fused)
+            t1 = t1_output
         else:
             # global_only has no local fusion, but missing T1 must still be
             # removed rather than converted into positional-embedding tokens.

@@ -113,9 +113,12 @@ class Stage1ContrastiveDataset(Dataset):
     """Fundus images paired with precomputed frozen CMR teacher embeddings."""
 
     def __init__(self, manifest: ManifestInput, split: str, embedding_file: str,
-                 embedding_eids_file: str, training: bool):
+                 embedding_eids_file: str, training: bool,
+                 require_t1: bool = False):
         frame = read_manifest(manifest)
         frame = frame.loc[frame["split"] == split].copy()
+        if require_t1:
+            frame = frame.loc[frame["t1_available"].map(_as_bool)]
         embeddings = np.load(embedding_file, mmap_mode="r")
         eids = np.load(embedding_eids_file).astype(np.int64)
         self.eid_to_index = {int(eid): i for i, eid in enumerate(eids)}
@@ -135,8 +138,12 @@ class Stage1ContrastiveDataset(Dataset):
         image = self.transform(Image.open(image_path).convert("RGB"))
         embedding = np.asarray(
             self.embeddings[self.eid_to_index[eid]], dtype=np.float32).copy()
-        return {"eid": eid, "image": image,
-                "cmr_embedding": torch.from_numpy(embedding)}
+        return {
+            "eid": eid,
+            "image": image,
+            "cmr_embedding": torch.from_numpy(embedding),
+            "t1_available": torch.tensor(_as_bool(row["t1_available"])),
+        }
 
 
 class UniqueParticipantSampler(Sampler[int]):

@@ -21,8 +21,10 @@ included.
 
 The held-out test split is not used by any training entry point. Model selection
 and operating thresholds are based on the validation split. Test performance is
-computed separately with `evaluate_cmr_teacher.py`, `evaluate_stage2.py`, and
-`evaluate_stage3.py`.
+computed separately with `evaluate_cmr_teacher.py`,
+`evaluate_stage1_alignment.py`, `evaluate_stage2.py`, and `evaluate_stage3.py`.
+Test evaluators require an explicit `--acknowledge-final-test` flag and refuse
+to overwrite an existing result file.
 
 ## CMR cross-attention implemented here
 
@@ -43,9 +45,15 @@ tokens in total). The `sax_t1` and `global_only` modes provide controlled
 architecture ablations.
 
 For participants without observed T1, the manifest sets `t1_available=false`.
-The model bypasses cine–T1 cross-attention for those participants, zeros the T1
-stream, and masks the 16 T1 positions in the global Transformer. It does not
-treat an all-zero placeholder as observed tissue information.
+The model does not send their T1 placeholder through the image backbone,
+bypasses cine–T1 cross-attention for those participants, zeros the T1 stream,
+and masks the 16 T1 positions in the global Transformer. It does not treat an
+all-zero placeholder as observed tissue information.
+
+The primary CMR objective is the equally weighted mean of four task-wise
+`BCEWithLogits` losses and the mean of 22 task-wise MSE losses. Classification
+positive weights and regression z-score statistics are estimated from the
+training split only. The selected checkpoint minimizes validation total loss.
 
 ## Installation
 
@@ -89,6 +97,14 @@ python train_stage1_contrastive.py \
   --external-validation-manifest manifests/external_validation_clean.csv \
   --output-dir outputs/stage1_infonce_seed42
 
+python evaluate_stage1_alignment.py \
+  --manifest manifests/stage1_test_images.csv \
+  --checkpoint outputs/stage1_infonce_seed42/best.pt \
+  --cmr-embeddings outputs/stage1_teacher_embeddings_seed42/cmr_teacher_embeddings.npy \
+  --cmr-eids outputs/stage1_teacher_embeddings_seed42/cmr_teacher_eids.npy \
+  --split test --acknowledge-final-test \
+  --output-json outputs/stage1_infonce_seed42/test_metrics.json
+
 python train_stage2_supervised.py \
   --manifest manifests/sdpp.csv \
   --initial-checkpoint outputs/stage1_infonce_seed42/best.pt \
@@ -110,7 +126,14 @@ python train_stage3_fusion.py \
 python -m compileall -q deepcad *.py
 python tests/smoke_test.py
 pytest -q
+python verify_manifests.py --checksum-file manifests/SHA256SUMS.txt
 ```
+
+Stage I optimization samples one eye per participant per epoch. Validation and
+test encode every available eye, average retinal projections within EID, and
+then compute participant-level InfoNCE and retrieval metrics. The optional
+`--require-t1` switch implements the T1-complete sensitivity analysis, while
+the evaluator reports T1-present and T1-missing subgroups separately.
 
 An optional real-backbone smoke test is available at
 `tests/real_backbone_smoke.py`; it requires a compatible Hiera checkpoint and

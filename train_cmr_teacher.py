@@ -12,8 +12,9 @@ from deepcad.data import CMRDataset
 from deepcad.losses import masked_multitask_loss
 from deepcad.models import CMREncoderV4, MultiTaskHead
 from deepcad.training.common import (
-    choose_device, dump_run_config, make_output_dir, parse_columns,
-    regression_statistics, save_checkpoint, trainable_parameters,
+    autocast_context, choose_device, classification_pos_weights, dump_run_config,
+    make_output_dir, parse_columns, regression_statistics, save_checkpoint,
+    trainable_parameters,
 )
 from deepcad.utils import seed_everything
 
@@ -33,7 +34,8 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
-    parser.add_argument("--regression-weight", type=float, default=1.0)
+    parser.add_argument("--classification-weight", type=float, default=0.5)
+    parser.add_argument("--regression-weight", type=float, default=0.5)
     parser.add_argument("--patience", type=int, default=10)
     parser.add_argument("--amp-dtype", choices=["bfloat16", "float16", "none"],
                         default="bfloat16")
@@ -45,11 +47,14 @@ def arguments() -> argparse.Namespace:
 
 
 def run_epoch(model, head, loader, device, optimizer, reg_mean, reg_std,
-              regression_weight: float, amp_dtype: str) -> float:
+              pos_weight, classification_weight: float,
+              regression_weight: float, amp_dtype: str) -> dict[str, float]:
     training = optimizer is not None
     model.train(training)
     head.train(training)
     total_loss = 0.0
+    total_classification = 0.0
+    total_regression = 0.0
     total_items = 0
     for batch in loader:
         cmr = batch["cmr"].to(device)
@@ -61,23 +66,32 @@ def run_epoch(model, head, loader, device, optimizer, reg_mean, reg_std,
         if reg_target.numel():
             reg_target = (reg_target - reg_mean) / reg_std
 
-        enabled = device.type == "cuda" and amp_dtype != "none"
-        dtype = torch.bfloat16 if amp_dtype == "bfloat16" else torch.float16
-        with torch.set_grad_enabled(training), torch.autocast(
-                device_type=device.type, dtype=dtype, enabled=enabled):
+        with torch.set_grad_enabled(training), autocast_context(
+                device, amp_dtype):
             _, features = model(cmr, t1_available=t1_available)
             cls_logits, reg_prediction = head(features)
-            loss = masked_multitask_loss(
+            loss, classification_loss, regression_loss = masked_multitask_loss(
                 cls_logits, reg_prediction, cls_target, reg_target,
-                cls_mask, reg_mask, regression_weight=regression_weight)
+                cls_mask, reg_mask,
+                classification_pos_weight=pos_weight,
+                classification_weight=classification_weight,
+                regression_weight=regression_weight,
+                return_components=True)
             if training:
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 optimizer.step()
         batch_size = cmr.shape[0]
         total_loss += float(loss.detach()) * batch_size
+        total_classification += float(classification_loss.detach()) * batch_size
+        total_regression += float(regression_loss.detach()) * batch_size
         total_items += batch_size
-    return total_loss / max(total_items, 1)
+    denominator = max(total_items, 1)
+    return {
+        "total": total_loss / denominator,
+        "classification": total_classification / denominator,
+        "regression": total_regression / denominator,
+    }
 
 
 def main() -> None:
@@ -118,32 +132,47 @@ def main() -> None:
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=max(args.epochs, 1))
     mean_np, std_np = regression_statistics(args.manifest, regression_columns)
+    pos_weight_np = classification_pos_weights(
+        args.manifest, classification_columns)
     reg_mean = torch.as_tensor(mean_np, device=device)
     reg_std = torch.as_tensor(std_np, device=device)
+    pos_weight = torch.as_tensor(pos_weight_np, device=device)
     dump_run_config(output, args, {
         "classification_columns_parsed": classification_columns,
         "regression_columns_parsed": regression_columns,
         "regression_mean": mean_np.tolist(),
         "regression_std": std_np.tolist(),
+        "classification_pos_weight": pos_weight_np.tolist(),
     })
 
     best = math.inf
     epochs_without_improvement = 0
     for epoch in range(args.epochs):
-        train_loss = run_epoch(
+        train_metrics = run_epoch(
             model, head, train_loader, device, optimizer, reg_mean, reg_std,
-            args.regression_weight, args.amp_dtype)
-        validation_loss = run_epoch(
+            pos_weight, args.classification_weight, args.regression_weight,
+            args.amp_dtype)
+        validation_metrics = run_epoch(
             model, head, validation_loader, device, None, reg_mean, reg_std,
-            args.regression_weight, args.amp_dtype)
-        print(f"epoch={epoch + 1} train_loss={train_loss:.6f} "
-              f"val_loss={validation_loss:.6f}", flush=True)
+            pos_weight, args.classification_weight, args.regression_weight,
+            args.amp_dtype)
+        validation_loss = validation_metrics["total"]
+        print(
+            f"epoch={epoch + 1} "
+            f"train_total={train_metrics['total']:.6f} "
+            f"train_cls={train_metrics['classification']:.6f} "
+            f"train_reg={train_metrics['regression']:.6f} "
+            f"val_total={validation_metrics['total']:.6f} "
+            f"val_cls={validation_metrics['classification']:.6f} "
+            f"val_reg={validation_metrics['regression']:.6f}", flush=True)
         payload = dict(
             epoch=epoch + 1, encoder=model.state_dict(), head=head.state_dict(),
             model_config=model_config,
             classification_columns=classification_columns,
             regression_columns=regression_columns,
             regression_mean=mean_np, regression_std=std_np,
+            classification_pos_weight=pos_weight_np,
+            validation_components=validation_metrics,
             validation_loss=validation_loss)
         save_checkpoint(output / "last.pt", **payload)
         if validation_loss < best:

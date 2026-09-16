@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -35,8 +36,12 @@ def main() -> None:
     parser.add_argument("--validation-thresholds")
     parser.add_argument("--split", default="test")
     parser.add_argument("--output-json", required=True)
+    parser.add_argument("--acknowledge-final-test", action="store_true")
     parser.add_argument("--device", default="auto")
     args = parser.parse_args()
+    if args.split == "test" and not args.acknowledge_final_test:
+        raise RuntimeError(
+            "Final test evaluation requires --acknowledge-final-test.")
 
     device = choose_device(args.device)
     checkpoint = torch.load(args.checkpoint, map_location="cpu")
@@ -69,8 +74,11 @@ def main() -> None:
         result["operating_points"] = {
             name: operating_metrics(labels, probabilities, value)
             for name, value in thresholds.items() if name != "source_split"}
-    with open(args.output_json, "w") as handle:
-        json.dump(result, handle, indent=2, sort_keys=True)
+    output = Path(args.output_json)
+    if output.exists():
+        raise FileExistsError(f"Refusing to overwrite evaluation result: {output}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(result, indent=2, sort_keys=True))
     print(json.dumps(result, indent=2, sort_keys=True))
 
 

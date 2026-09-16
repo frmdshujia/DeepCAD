@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import math
+from collections import defaultdict
 
 import numpy as np
 import torch
@@ -13,7 +14,7 @@ from torch.utils.data import DataLoader
 from deepcad.data import FundusBinaryDataset
 from deepcad.models import FundusBinaryClassifier, RETFoundFundusEncoder
 from deepcad.training.common import (
-    choose_device, dump_run_config, make_output_dir, save_checkpoint,
+    autocast_context, choose_device, dump_run_config, make_output_dir, save_checkpoint,
     trainable_parameters,
 )
 from deepcad.utils import safe_auroc, seed_everything
@@ -50,14 +51,12 @@ def run_epoch(model, loader, device, optimizer, positive_weight, amp_dtype,
     training = optimizer is not None
     model.train(training)
     total_loss, total_items = 0.0, 0
-    labels, probabilities = [], []
+    labels, probabilities, eids = [], [], []
     for batch in loader:
         images = batch["image"].to(device)
         target = batch["label"].to(device)
-        enabled = device.type == "cuda" and amp_dtype != "none"
-        dtype = torch.bfloat16 if amp_dtype == "bfloat16" else torch.float16
-        with torch.set_grad_enabled(training), torch.autocast(
-                device_type=device.type, dtype=dtype, enabled=enabled):
+        with torch.set_grad_enabled(training), autocast_context(
+                device, amp_dtype):
             logits = model(images)
             loss_target = target
             if loss_type == "paper_bce":
@@ -75,8 +74,21 @@ def run_epoch(model, loader, device, optimizer, positive_weight, amp_dtype,
         total_items += images.shape[0]
         labels.append(target.detach().cpu().numpy())
         probabilities.append(logits.detach().sigmoid().cpu().numpy())
+        eids.extend(int(eid) for eid in batch["eid"].tolist())
     labels_np = np.concatenate(labels)
     probabilities_np = np.concatenate(probabilities)
+    if not training:
+        labels_by_eid = {}
+        probabilities_by_eid = defaultdict(list)
+        for eid, label, probability in zip(eids, labels_np, probabilities_np):
+            if eid in labels_by_eid and labels_by_eid[eid] != int(label):
+                raise ValueError(f"Conflicting labels for EID {eid}")
+            labels_by_eid[eid] = int(label)
+            probabilities_by_eid[eid].append(float(probability))
+        participant_eids = sorted(labels_by_eid)
+        labels_np = np.asarray([labels_by_eid[eid] for eid in participant_eids])
+        probabilities_np = np.asarray([
+            np.mean(probabilities_by_eid[eid]) for eid in participant_eids])
     return total_loss / max(total_items, 1), safe_auroc(labels_np, probabilities_np)
 
 

@@ -21,19 +21,24 @@ phases), followed by native T1. Missing targets may be blank/NaN and are masked.
 
 ## Stage I retinal–CMR manifest
 
-Required columns: `eid`, `split`, and `fundus_path` (the historical name
-`fundus_image_path` is accepted as an alias). Multiple retinal images may belong
-to one participant. The participant sampler selects one image per person
-per epoch so that another eye from the same person cannot become an InfoNCE
-negative. CMR embeddings are supplied separately as an `(N, 768)` `.npy` file
-and an aligned `(N,)` participant-ID `.npy` file.
+Required columns: `eid`, `split`, `t1_available`, and `fundus_path` (the
+historical name `fundus_image_path` is accepted as an alias). Multiple retinal
+images may belong to one participant. The participant sampler selects one image
+per person per training epoch so that another eye from the same person cannot
+become an InfoNCE negative. Validation and test use every image, average
+L2-normalized retinal projections within EID, and renormalize the participant
+representation before computing alignment metrics. CMR embeddings are supplied
+separately as an `(N, 768)` `.npy` file and an aligned `(N,)` participant-ID
+`.npy` file.
 
 If `--external-validation-manifest` is passed, it must contain an `eid` column.
 Training aborts if any identifier occurs in both manifests.
 
 ## Stage II manifest
 
-Required columns: `eid`, `split`, `fundus_path`, and binary `label`.
+Required columns: `eid`, `split`, `fundus_path`, and binary `label`. If both
+eyes are available, validation and evaluation average eye-level probabilities
+within EID before calculating AUROC.
 
 ## Stage III manifest
 

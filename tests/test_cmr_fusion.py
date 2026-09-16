@@ -5,17 +5,25 @@ import deepcad.models.cmr_encoder as cmr_module
 
 
 class DummyBackbone(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.batch_sizes = []
+
     def forward(self, images):
+        self.batch_sizes.append(images.shape[0])
         pooled = images.mean(dim=(1, 2, 3), keepdim=True)
         return pooled.expand(images.shape[0], 768, 7, 7)
 
 
 def build_model(monkeypatch, fusion_mode="hierarchical"):
+    backbone = DummyBackbone()
     monkeypatch.setattr(
-        cmr_module, "build_backbone", lambda *args, **kwargs: DummyBackbone())
-    return cmr_module.CMREncoderV4(
+        cmr_module, "build_backbone", lambda *args, **kwargs: backbone)
+    model = cmr_module.CMREncoderV4(
         spatial_pool=2, transformer_depth=1, fusion_mode=fusion_mode,
         backbone="medsam2_heart", backbone_ckpt=None)
+    model._test_backbone = backbone
+    return model
 
 
 def test_hierarchical_forward_shapes(monkeypatch):
@@ -25,6 +33,7 @@ def test_hierarchical_forward_shapes(monkeypatch):
         images, t1_available=torch.tensor([True, False]))
     assert projection.shape == (2, 256)
     assert representation.shape == (2, 768)
+    assert model._test_backbone.batch_sizes == [30, 1]
 
 
 def test_missing_t1_masks_exact_t1_region(monkeypatch):
