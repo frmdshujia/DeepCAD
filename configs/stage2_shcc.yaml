@@ -1,0 +1,15 @@
+# Stage II, step 2: SHCC CTA/ICA-confirmed obstructive CAD.
+development_step: shcc
+epochs: 30
+batch_size: 64
+workers: 4
+learning_rate: 5.0e-5
+weight_decay: 1.0e-4
+loss_type: focal
+focal_alpha: 0.25
+focal_gamma: 2.0
+unfreeze_last_blocks: 12
+patience: 10
+calibrate: true
+amp_dtype: bfloat16
+seed: 42

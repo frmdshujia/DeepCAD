@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -38,30 +37,32 @@ def main() -> None:
     model = FundusBinaryClassifier(encoder)
     model.load_state_dict(checkpoint["model"], strict=True)
     model.to(device).eval()
+    calibration_temperature = float(
+        checkpoint.get("calibration_temperature", 1.0))
+    if calibration_temperature <= 0:
+        raise ValueError("Calibration temperature must be positive.")
     dataset = FundusBinaryDataset(args.manifest, args.split, False)
     loader = DataLoader(
         dataset, batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=device.type == "cuda")
-    labels_by_eid = {}
-    probabilities_by_eid = defaultdict(list)
+    eids, labels, probabilities = [], [], []
     with torch.no_grad():
         for batch in loader:
             logits = model(batch["image"].to(device))
             batch_labels = batch["label"].numpy()
-            batch_probabilities = logits.sigmoid().cpu().numpy()
-            for eid, label, probability in zip(
-                    batch["eid"].tolist(), batch_labels, batch_probabilities):
-                eid = int(eid)
-                if eid in labels_by_eid and labels_by_eid[eid] != int(label):
-                    raise ValueError(f"Conflicting labels for EID {eid}")
-                labels_by_eid[eid] = int(label)
-                probabilities_by_eid[eid].append(float(probability))
-    eids = sorted(labels_by_eid)
-    labels = np.asarray([labels_by_eid[eid] for eid in eids])
-    probabilities = np.asarray([
-        np.mean(probabilities_by_eid[eid]) for eid in eids])
+            batch_probabilities = (
+                logits / calibration_temperature).sigmoid().cpu().numpy()
+            eids.extend(int(eid) for eid in batch["eid"].tolist())
+            labels.extend(int(label) for label in batch_labels)
+            probabilities.extend(float(value) for value in batch_probabilities)
+    if len(set(eids)) != len(eids):
+        raise RuntimeError(
+            "Evaluation requires exactly one retinal photograph per participant.")
+    labels = np.asarray(labels)
+    probabilities = np.asarray(probabilities)
     result = {"split": args.split, "n_participants": int(len(labels)),
-              "aggregation": "mean eye-level probability within EID",
+              "image_policy": "one deterministic retinal photograph per participant",
+              "calibration_temperature": calibration_temperature,
               "auroc": safe_auroc(labels, probabilities)}
     output = Path(args.output_json)
     if output.exists():

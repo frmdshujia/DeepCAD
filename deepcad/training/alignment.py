@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from collections import defaultdict
-
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -18,11 +16,8 @@ def collect_participant_embeddings(
     device: torch.device,
     amp_dtype: str = "bfloat16",
 ):
-    """Encode every eye and average retinal projections within participant."""
-    fundus_sums = defaultdict(lambda: None)
-    counts = defaultdict(int)
-    cmr_by_eid = {}
-    t1_by_eid = {}
+    """Encode one prespecified retinal photograph per participant."""
+    eids, fundus, cmr, t1_available = [], [], [], []
     fundus_encoder.eval()
     cmr_projector.eval()
     for batch in loader:
@@ -30,25 +25,19 @@ def collect_participant_embeddings(
             fundus_projection, _ = fundus_encoder(batch["image"].to(device))
             cmr_projection = F.normalize(
                 cmr_projector(batch["cmr_embedding"].to(device)), dim=-1)
-        fundus_projection = fundus_projection.float().cpu()
-        cmr_projection = cmr_projection.float().cpu()
-        for index, eid_value in enumerate(batch["eid"].tolist()):
-            eid = int(eid_value)
-            current = fundus_projection[index]
-            fundus_sums[eid] = (
-                current.clone() if fundus_sums[eid] is None
-                else fundus_sums[eid] + current)
-            counts[eid] += 1
-            cmr_by_eid.setdefault(eid, cmr_projection[index].clone())
-            t1_by_eid[eid] = bool(batch["t1_available"][index])
-    eids = np.asarray(sorted(fundus_sums), dtype=np.int64)
-    fundus = torch.stack([
-        fundus_sums[int(eid)] / counts[int(eid)] for eid in eids])
-    fundus = F.normalize(fundus, dim=-1)
-    cmr = F.normalize(torch.stack([cmr_by_eid[int(eid)] for eid in eids]), dim=-1)
-    t1_available = np.asarray([t1_by_eid[int(eid)] for eid in eids], dtype=bool)
-    eye_counts = np.asarray([counts[int(eid)] for eid in eids], dtype=np.int64)
-    return eids, fundus, cmr, t1_available, eye_counts
+        eids.extend(int(value) for value in batch["eid"].tolist())
+        fundus.append(fundus_projection.float().cpu())
+        cmr.append(cmr_projection.float().cpu())
+        t1_available.extend(bool(value) for value in batch["t1_available"])
+    if len(set(eids)) != len(eids):
+        raise RuntimeError(
+            "Evaluation requires exactly one retinal photograph per participant.")
+    return (
+        np.asarray(eids, dtype=np.int64),
+        F.normalize(torch.cat(fundus), dim=-1),
+        F.normalize(torch.cat(cmr), dim=-1),
+        np.asarray(t1_available, dtype=bool),
+    )
 
 
 def alignment_metrics(

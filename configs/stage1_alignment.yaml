@@ -1,0 +1,19 @@
+# Primary Stage I retinal-CMR alignment protocol.
+# The current manuscript fixes tau at 0.1. Other optimization values are from
+# the recorded full-pair Stage I protocol, with the documented 1:10 LR ratio.
+epochs: 100
+batch_size: 64
+workers: 4
+backbone_learning_rate: 1.0e-5
+new_module_learning_rate: 1.0e-4
+weight_decay: 0.05
+warmup_epochs: 10
+min_learning_rate_ratio: 0.01
+patience: 15
+temperature: 0.1
+unfreeze_last_blocks: 12
+adapter_dim: 64
+projection_dim: 128
+require_t1: false
+amp_dtype: bfloat16
+seed: 42

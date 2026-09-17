@@ -12,18 +12,34 @@ class FakeFundusEncoder(nn.Module):
         return projection, images
 
 
-def test_eye_embeddings_are_averaged_within_eid():
+def test_single_image_embeddings_preserve_participants():
     batch = {
-        "eid": torch.tensor([10, 10, 20]),
-        "image": torch.tensor([[1.0, 0.0], [0.0, 1.0], [0.0, 1.0]]),
+        "eid": torch.tensor([10, 20]),
+        "image": torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
         "cmr_embedding": torch.tensor(
-            [[1.0, 1.0], [1.0, 1.0], [0.0, 1.0]]),
-        "t1_available": torch.tensor([True, True, False]),
+            [[1.0, 1.0], [0.0, 1.0]]),
+        "t1_available": torch.tensor([True, False]),
     }
-    eids, fundus, cmr, t1, eye_counts = collect_participant_embeddings(
+    eids, fundus, cmr, t1 = collect_participant_embeddings(
         FakeFundusEncoder(), nn.Identity(), [batch], torch.device("cpu"), "none")
     assert eids.tolist() == [10, 20]
-    assert eye_counts.tolist() == [2, 1]
     assert t1.tolist() == [True, False]
     assert alignment_metrics(
-        fundus, cmr, torch.tensor(1 / 0.07).log())["n"] == 2
+        fundus, cmr, torch.tensor(1 / 0.1).log())["n"] == 2
+
+
+def test_duplicate_participant_images_are_rejected_at_evaluation():
+    batch = {
+        "eid": torch.tensor([10, 10]),
+        "image": torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
+        "cmr_embedding": torch.tensor([[1.0, 1.0], [1.0, 1.0]]),
+        "t1_available": torch.tensor([True, True]),
+    }
+    try:
+        collect_participant_embeddings(
+            FakeFundusEncoder(), nn.Identity(), [batch], torch.device("cpu"),
+            "none")
+    except RuntimeError as error:
+        assert "exactly one" in str(error)
+    else:
+        raise AssertionError("Duplicate participant images were not rejected.")

@@ -66,19 +66,18 @@ def main() -> None:
             return projection, images
 
     participant_batch = {
-        "eid": torch.tensor([10, 10, 20]),
-        "image": torch.tensor([[1.0, 0.0], [0.0, 1.0], [0.0, 1.0]]),
+        "eid": torch.tensor([10, 20]),
+        "image": torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
         "cmr_embedding": torch.tensor(
-            [[1.0, 1.0], [1.0, 1.0], [0.0, 1.0]]),
-        "t1_available": torch.tensor([True, True, False]),
+            [[1.0, 1.0], [0.0, 1.0]]),
+        "t1_available": torch.tensor([True, False]),
     }
-    eids, fundus, cmr, t1, eye_counts = collect_participant_embeddings(
+    eids, fundus, cmr, t1 = collect_participant_embeddings(
         FakeFundusEncoder(), nn.Identity(), [participant_batch],
         torch.device("cpu"), "none")
     assert eids.tolist() == [10, 20]
-    assert eye_counts.tolist() == [2, 1]
     assert t1.tolist() == [True, False]
-    metrics = alignment_metrics(fundus, cmr, torch.tensor(1 / 0.07).log())
+    metrics = alignment_metrics(fundus, cmr, torch.tensor(1 / 0.1).log())
     assert metrics["n"] == 2
     print("smoke_test: PASS")
 

@@ -1,7 +1,8 @@
 {
-  "classification_4": [
+  "classification_5": [
     "prevalent_I21",
     "prevalent_I25",
+    "history_revasc",
     "composite_cardiomyopathy_hf",
     "prevalent_I48"
   ],

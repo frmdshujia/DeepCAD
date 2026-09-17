@@ -8,7 +8,7 @@ import torch.nn.functional as F
 def symmetric_info_nce(
     fundus_projection: torch.Tensor,
     cmr_projection: torch.Tensor,
-    temperature: torch.Tensor | float = 0.07,
+    temperature: torch.Tensor | float = 0.1,
 ) -> torch.Tensor:
     fundus_projection = F.normalize(fundus_projection, dim=1)
     cmr_projection = F.normalize(cmr_projection, dim=1)
@@ -28,29 +28,43 @@ def masked_multitask_loss(
     classification_mask: torch.Tensor,
     regression_mask: torch.Tensor,
     classification_pos_weight: torch.Tensor | None = None,
+    focal_gamma: float = 0.0,
     classification_weight: float = 0.5,
     regression_weight: float = 0.5,
     return_components: bool = False,
 ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Balanced loss over task groups and then over tasks within each group.
 
-    For the primary 4-classification + 22-regression teacher this implements
-    ``0.5 * mean(task BCE) + 0.5 * mean(task MSE)``. If one task group is absent
-    (for example, the legacy eight-regression ablation), the available group is
-    assigned unit weight so its effective learning-rate scale is not halved.
+    For the primary 5-classification + 22-regression teacher this implements
+    ``0.5 * mean(task focal loss) + 0.5 * mean(task MSE)``. The per-task
+    negative/positive ratio is converted to the focal alpha for the positive
+    class. Setting ``focal_gamma=0`` recovers weighted BCE. If one task group is
+    absent, the available group is assigned unit weight.
     """
     zero = classification_logits.sum() * 0.0 + regression_predictions.sum() * 0.0
     classification_losses = []
     for task in range(classification_logits.shape[1]):
         valid = classification_mask[:, task]
         if valid.any():
+            logits = classification_logits[valid, task]
+            targets = classification_targets[valid, task]
             pos_weight = (
                 classification_pos_weight[task]
-                if classification_pos_weight is not None else None)
-            classification_losses.append(F.binary_cross_entropy_with_logits(
-                classification_logits[valid, task],
-                classification_targets[valid, task],
-                pos_weight=pos_weight))
+                if classification_pos_weight is not None
+                else logits.new_tensor(1.0))
+            if focal_gamma > 0:
+                alpha = pos_weight / (pos_weight + 1.0)
+                bce = F.binary_cross_entropy_with_logits(
+                    logits, targets, reduction="none")
+                probability = torch.sigmoid(logits)
+                probability_t = (
+                    probability * targets + (1.0 - probability) * (1.0 - targets))
+                alpha_t = alpha * targets + (1.0 - alpha) * (1.0 - targets)
+                classification_losses.append(
+                    (alpha_t * (1.0 - probability_t).pow(focal_gamma) * bce).mean())
+            else:
+                classification_losses.append(F.binary_cross_entropy_with_logits(
+                    logits, targets, pos_weight=pos_weight))
     regression_losses = []
     for task in range(regression_predictions.shape[1]):
         valid = regression_mask[:, task]

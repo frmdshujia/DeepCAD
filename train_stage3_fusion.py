@@ -12,11 +12,12 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
+from deepcad.config import parse_args_with_config
 from deepcad.models import ClinicalRiskMLP
 from deepcad.manifest import read_manifest
 from deepcad.training.common import (
-    choose_device, dump_run_config, make_output_dir, parse_columns,
-    save_checkpoint,
+    assert_manifest_schema, choose_device, dump_run_config, make_output_dir,
+    parse_columns, save_checkpoint,
 )
 from deepcad.utils import safe_auroc, seed_everything
 
@@ -57,8 +58,14 @@ def run_epoch(model, loader, device, optimizer):
 
 
 def operating_threshold(labels, probabilities, metric, target):
-    candidates = np.unique(probabilities)
-    best_threshold, best_gap = 0.5, math.inf
+    probabilities = np.asarray(probabilities, dtype=float)
+    # Include the all-negative boundary. This guarantees that a specificity
+    # target remains mathematically attainable when the highest-scored sample
+    # is a control, while the secondary-metric rule below avoids choosing this
+    # degenerate point when a more sensitive qualifying threshold exists.
+    candidates = np.append(
+        np.unique(probabilities), np.nextafter(probabilities.max(), np.inf))
+    qualified = []
     for threshold in candidates:
         predicted = probabilities >= threshold
         tp = np.sum(predicted & (labels == 1))
@@ -68,10 +75,19 @@ def operating_threshold(labels, probabilities, metric, target):
         sensitivity = tp / max(tp + fn, 1)
         specificity = tn / max(tn + fp, 1)
         value = specificity if metric == "specificity" else sensitivity
-        gap = abs(value - target)
-        if gap < best_gap:
-            best_gap, best_threshold = gap, float(threshold)
-    return best_threshold
+        if value >= target:
+            secondary = sensitivity if metric == "specificity" else specificity
+            qualified.append((secondary, float(threshold)))
+    if not qualified:
+        raise ValueError(
+            f"No validation threshold achieves {metric} >= {target:.2f}.")
+    best_secondary = max(item[0] for item in qualified)
+    tied = [threshold for secondary, threshold in qualified
+            if secondary == best_secondary]
+    # At equal secondary performance, use the conservative boundary: a lower
+    # high-specificity cutoff preserves sensitivity; a higher high-sensitivity
+    # cutoff preserves specificity.
+    return min(tied) if metric == "specificity" else max(tied)
 
 
 def main() -> None:
@@ -89,16 +105,21 @@ def main() -> None:
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--patience", type=int, default=15)
+    parser.add_argument("--low-risk-sensitivity", type=float, default=0.90)
+    parser.add_argument("--high-risk-specificity", type=float, default=0.95)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--allow-existing", action="store_true")
-    args = parser.parse_args()
+    args = parse_args_with_config(parser)
 
     seed_everything(args.seed)
     output = make_output_dir(args.output_dir, args.allow_existing)
     device = choose_device(args.device)
     columns = parse_columns(args.feature_columns)
     hidden_dims = tuple(int(value) for value in parse_columns(args.hidden_dims))
+    assert_manifest_schema(
+        args.manifest, ["label", *columns],
+        allow_repeated_within_split=False)
     frame = read_manifest(args.manifest)
     train_frame = frame.loc[frame["split"] == "train"].copy()
     validation_frame = frame.loc[frame["split"] == "val"].copy()
@@ -148,9 +169,11 @@ def main() -> None:
             thresholds = {
                 "source_split": "val",
                 "high_specificity_95": operating_threshold(
-                    val_labels, val_probabilities, "specificity", 0.95),
+                    val_labels, val_probabilities, "specificity",
+                    args.high_risk_specificity),
                 "high_sensitivity_90": operating_threshold(
-                    val_labels, val_probabilities, "sensitivity", 0.90),
+                    val_labels, val_probabilities, "sensitivity",
+                    args.low_risk_sensitivity),
             }
             (output / "validation_thresholds.json").write_text(
                 json.dumps(thresholds, indent=2, sort_keys=True))

@@ -17,6 +17,35 @@ IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
 
+def select_one_image_per_participant(frame: pd.DataFrame) -> pd.DataFrame:
+    """Select one retinal photograph per participant deterministically.
+
+    Selection is label-independent. When available, the photograph closest in
+    time to CMR is preferred, followed by the lowest fundus acquisition
+    instance. The resolved image path is the final stable tie-breaker.
+    """
+    if "eid" not in frame or "fundus_path" not in frame:
+        raise ValueError("Retinal manifests require eid and fundus_path columns.")
+    ranked = frame.copy()
+    if "visit_interval_years" in ranked:
+        ranked["_visit_gap"] = pd.to_numeric(
+            ranked["visit_interval_years"], errors="coerce").abs().fillna(np.inf)
+    else:
+        ranked["_visit_gap"] = np.inf
+    if "fundus_instance" in ranked:
+        ranked["_fundus_instance"] = pd.to_numeric(
+            ranked["fundus_instance"], errors="coerce").fillna(np.inf)
+    else:
+        ranked["_fundus_instance"] = np.inf
+    ranked["_stable_path"] = ranked["fundus_path"].astype(str)
+    ranked = ranked.sort_values(
+        ["eid", "_visit_gap", "_fundus_instance", "_stable_path"],
+        kind="stable")
+    return ranked.drop_duplicates("eid", keep="first").drop(
+        columns=["_visit_gap", "_fundus_instance", "_stable_path"]
+    ).reset_index(drop=True)
+
+
 def _as_bool(value: object) -> bool:
     if isinstance(value, (bool, np.bool_)):
         return bool(value)
@@ -32,14 +61,7 @@ def _as_bool(value: object) -> bool:
 
 def fundus_transform(training: bool, image_size: int = 224,
                      protocol: str = "supervised"):
-    if training and protocol == "contrastive":
-        return transforms.Compose([
-            transforms.RandomResizedCrop(image_size, scale=(0.7, 1.0)),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
-        ])
-    if training and protocol == "supervised":
+    if training and protocol in {"contrastive", "supervised"}:
         return transforms.Compose([
             transforms.Resize(image_size),
             transforms.CenterCrop(image_size),
@@ -89,8 +111,6 @@ class CMRDataset(Dataset):
         if cmr.shape != (16, 224, 224):
             raise ValueError(f"Unexpected CMR shape {cmr.shape}: {cmr_path}")
         tensor = torch.from_numpy(cmr).unsqueeze(1)
-        if self.training and torch.rand(()) < 0.5:
-            tensor = tensor.flip(-1)
 
         cls = pd.to_numeric(row[self.classification_columns], errors="coerce").to_numpy(
             dtype=np.float32) if self.classification_columns else np.empty(0, np.float32)
@@ -123,6 +143,8 @@ class Stage1ContrastiveDataset(Dataset):
         eids = np.load(embedding_eids_file).astype(np.int64)
         self.eid_to_index = {int(eid): i for i, eid in enumerate(eids)}
         frame = frame[frame["eid"].astype(int).isin(self.eid_to_index)]
+        if not training:
+            frame = select_one_image_per_participant(frame)
         self.frame = frame.reset_index(drop=True)
         self.embeddings = embeddings
         self.transform = fundus_transform(training, protocol="contrastive")
@@ -147,9 +169,11 @@ class Stage1ContrastiveDataset(Dataset):
 
 
 class UniqueParticipantSampler(Sampler[int]):
-    """Select one image per participant per epoch to avoid InfoNCE false negatives."""
+    """Select one image per participant per epoch."""
 
-    def __init__(self, dataset: Stage1ContrastiveDataset, seed: int = 0):
+    def __init__(self, dataset: Dataset, seed: int = 0):
+        if not hasattr(dataset, "eids"):
+            raise TypeError("UniqueParticipantSampler requires dataset.eids.")
         groups: dict[int, list[int]] = defaultdict(list)
         for index, eid in enumerate(dataset.eids):
             groups[eid].append(index)
@@ -178,8 +202,16 @@ class FundusBinaryDataset(Dataset):
 
     def __init__(self, manifest: ManifestInput, split: str, training: bool):
         frame = read_manifest(manifest)
-        self.frame = frame.loc[frame["split"] == split].reset_index(drop=True)
+        frame = frame.loc[frame["split"] == split].copy()
+        conflicting = frame.groupby("eid")["label"].nunique(dropna=False)
+        if (conflicting > 1).any():
+            eid = conflicting[conflicting > 1].index[0]
+            raise ValueError(f"Conflicting labels for EID {eid}")
+        if not training:
+            frame = select_one_image_per_participant(frame)
+        self.frame = frame.reset_index(drop=True)
         self.transform = fundus_transform(training, protocol="supervised")
+        self.eids = self.frame["eid"].astype(int).tolist()
 
     def __len__(self) -> int:
         return len(self.frame)

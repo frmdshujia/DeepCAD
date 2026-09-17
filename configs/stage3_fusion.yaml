@@ -1,0 +1,13 @@
+# Stage III: frozen retinal score plus age, sex, and five CAD risk factors.
+feature_columns: retinal_score,age,sex,hypertension,diabetes,smoking,dyslipidemia,family_history
+hidden_dims: 32,16
+dropout: 0.2
+epochs: 100
+batch_size: 128
+learning_rate: 1.0e-3
+weight_decay: 1.0e-4
+patience: 15
+low_risk_sensitivity: 0.90
+high_risk_specificity: 0.95
+seed: 42
+

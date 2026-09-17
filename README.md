@@ -50,10 +50,30 @@ bypasses cine–T1 cross-attention for those participants, zeros the T1 stream,
 and masks the 16 T1 positions in the global Transformer. It does not treat an
 all-zero placeholder as observed tissue information.
 
-The primary CMR objective is the equally weighted mean of four task-wise
-`BCEWithLogits` losses and the mean of 22 task-wise MSE losses. Classification
-positive weights and regression z-score statistics are estimated from the
-training split only. The selected checkpoint minimizes validation total loss.
+The primary CMR objective is the equally weighted mean of five task-wise focal
+losses and the mean of 22 task-wise MSE losses. The focal focusing parameter is
+2.0; task-specific class weights and regression z-score statistics are
+estimated from the training split only. The Hiera backbone is frozen for three
+epochs, then unfrozen with gradient checkpointing. The manuscript-locked
+optimization schedule is recorded in [`configs/cmr_teacher.yaml`](configs/cmr_teacher.yaml).
+The selected checkpoint minimizes validation total loss.
+
+## Manuscript-locked configurations
+
+All training entry points accept a flat YAML file through `--config`; explicit
+command-line arguments override YAML values. The primary configurations are in
+[`configs/`](configs/README.md). In particular, Stage I uses a fixed temperature
+of 0.1, fine-tunes the last 12 RETFound blocks, and applies a 1:10 learning-rate
+ratio between the pretrained backbone and newly introduced modules. Stage II
+uses focal loss (`alpha=0.25`, `gamma=2.0`); the SHCC step additionally fits a
+single temperature on the validation split and stores it in the selected
+checkpoint.
+
+The five-task CMR configuration requires a `history_revasc` column in addition
+to I21, I25, CM/HF, and I48. A four-classification `complete26` manifest is not
+compatible with the manuscript's five-classification + 22-regression protocol.
+See [`docs/METHODS_CODE_ALIGNMENT.md`](docs/METHODS_CODE_ALIGNMENT.md) for the
+claim-by-claim mapping from the Methods section to implementation and YAML.
 
 ## Installation
 
@@ -88,11 +108,9 @@ overwriting. Replace the placeholder paths with files matching
 
 ```bash
 python train_cmr_teacher.py \
+  --config configs/cmr_teacher.yaml \
   --manifest manifests/cmr_teacher_train.csv manifests/cmr_teacher_val.csv manifests/cmr_teacher_test.csv \
   --backbone-checkpoint weights/MedSAM2_US_Heart.pt \
-  --classification-columns prevalent_I21,prevalent_I25,composite_cardiomyopathy_hf,prevalent_I48 \
-  --regression-columns LVEF,LVEDV,LVESV,LVSV,LV_CO,LVM,LV_WT,GLS,GCS,GRS,RVEF,RVEDV,RVESV,RVSV,LAEF,LA_max,LA_min,LASV,RAEF,RA_max,RA_min,RASV \
-  --fusion-mode hierarchical \
   --output-dir outputs/cmr_teacher_hierarchical_seed42
 
 python extract_cmr_embeddings.py \
@@ -101,6 +119,7 @@ python extract_cmr_embeddings.py \
   --output-dir outputs/stage1_teacher_embeddings_seed42
 
 python train_stage1_contrastive.py \
+  --config configs/stage1_alignment.yaml \
   --manifest manifests/stage1_train_images.csv manifests/stage1_val_images.csv manifests/stage1_test_images.csv \
   --cmr-embeddings outputs/stage1_teacher_embeddings_seed42/cmr_teacher_embeddings.npy \
   --cmr-eids outputs/stage1_teacher_embeddings_seed42/cmr_teacher_eids.npy \
@@ -117,16 +136,19 @@ python evaluate_stage1_alignment.py \
   --output-json outputs/stage1_infonce_seed42/test_metrics.json
 
 python train_stage2_supervised.py \
+  --config configs/stage2_sdpp.yaml \
   --manifest manifests/sdpp.csv \
   --initial-checkpoint outputs/stage1_infonce_seed42/best.pt \
   --output-dir outputs/stage2_sdpp_seed42
 
 python train_stage2_supervised.py \
+  --config configs/stage2_shcc.yaml \
   --manifest manifests/shcc.csv \
   --initial-checkpoint outputs/stage2_sdpp_seed42/best.pt \
   --output-dir outputs/stage2_shcc_seed42
 
 python train_stage3_fusion.py \
+  --config configs/stage3_fusion.yaml \
   --manifest manifests/stage3.csv \
   --output-dir outputs/stage3_clinical_fusion_seed42
 ```
@@ -140,9 +162,9 @@ pytest -q
 python verify_manifests.py --checksum-file manifests/SHA256SUMS.txt
 ```
 
-Stage I optimization samples one eye per participant per epoch. Validation and
-test encode every available eye, average retinal projections within EID, and
-then compute participant-level InfoNCE and retrieval metrics. The optional
+Stage I optimization samples one retinal photograph per participant per epoch.
+Validation and test use one deterministically selected photograph per
+participant; no bilateral or multi-image averaging is performed. The optional
 `--require-t1` switch implements the T1-complete sensitivity analysis, while
 the evaluator reports T1-present and T1-missing subgroups separately.
 

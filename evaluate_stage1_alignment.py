@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate Stage I after averaging all retinal images within participant."""
+"""Evaluate Stage I using one prespecified image per participant."""
 from __future__ import annotations
 
 import argparse
@@ -56,14 +56,13 @@ def main() -> None:
     loader = DataLoader(
         dataset, batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=device.type == "cuda")
-    eids, fundus, cmr, t1_available, eye_counts = collect_participant_embeddings(
+    eids, fundus, cmr, t1_available = collect_participant_embeddings(
         fundus_encoder, cmr_projector, loader, device, args.amp_dtype)
     result = {
         "split": args.split,
-        "aggregation": "mean eye-level projection within EID, then L2 normalize",
+        "image_policy": "one deterministic retinal photograph per participant",
         "overall": alignment_metrics(
             fundus, cmr, checkpoint["logit_scale"]),
-        "mean_eyes_per_participant": float(eye_counts.mean()),
         "t1_present": alignment_metrics(
             fundus[t1_available], cmr[t1_available],
             checkpoint["logit_scale"]),

@@ -36,6 +36,7 @@ for POLICY in all require_t1; do
     EXTRA_ARGS+=(--require-t1)
   fi
   "${PYTHON_BIN}" train_stage1_contrastive.py \
+    --config configs/stage1_alignment.yaml \
     --manifest "${IMAGE_MANIFESTS[@]}" \
     --cmr-embeddings "${EMBEDDING_DIR}/cmr_teacher_embeddings.npy" \
     --cmr-eids "${EMBEDDING_DIR}/cmr_teacher_eids.npy" \

@@ -10,12 +10,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
+from deepcad.config import parse_args_with_config
 from deepcad.data import Stage1ContrastiveDataset, UniqueParticipantSampler
 from deepcad.losses import symmetric_info_nce
 from deepcad.models import RETFoundFundusEncoder
 from deepcad.training.common import (
-    assert_disjoint_participants, autocast_context, choose_device, dump_run_config,
-    make_output_dir, save_checkpoint, trainable_parameters,
+    assert_disjoint_participants, assert_manifest_schema, autocast_context,
+    choose_device, dump_run_config, make_output_dir, save_checkpoint,
+    warmup_cosine_scheduler,
 )
 from deepcad.training.alignment import (
     alignment_metrics, collect_participant_embeddings,
@@ -31,28 +33,32 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--retfound-checkpoint", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--external-validation-manifest", nargs="+")
-    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--workers", type=int, default=4)
-    parser.add_argument("--learning-rate", type=float, default=3e-4)
-    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--backbone-learning-rate", type=float, default=1e-5)
+    parser.add_argument("--new-module-learning-rate", "--learning-rate",
+                        dest="new_module_learning_rate", type=float, default=1e-4)
+    parser.add_argument("--weight-decay", type=float, default=0.05)
     parser.add_argument("--adapter-dim", type=int, default=64)
     parser.add_argument("--projection-dim", type=int, default=128)
-    parser.add_argument("--unfreeze-last-blocks", type=int, default=0)
-    parser.add_argument("--temperature", type=float, default=0.07)
+    parser.add_argument("--unfreeze-last-blocks", type=int, default=12)
+    parser.add_argument("--temperature", type=float, default=0.1)
+    parser.add_argument("--warmup-epochs", type=int, default=10)
+    parser.add_argument("--min-learning-rate-ratio", type=float, default=0.01)
     parser.add_argument(
         "--require-t1", action="store_true",
         help="Sensitivity analysis restricted to participants with observed T1")
-    parser.add_argument("--patience", type=int, default=8)
+    parser.add_argument("--patience", type=int, default=15)
     parser.add_argument("--amp-dtype", choices=["bfloat16", "float16", "none"],
                         default="bfloat16")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--allow-existing", action="store_true")
-    return parser.parse_args()
+    return parse_args_with_config(parser)
 
 
-def run_training_epoch(fundus_encoder, cmr_projector, logit_scale, loader,
+def run_training_epoch(fundus_encoder, cmr_projector, temperature, loader,
                        sampler, device, optimizer, epoch: int,
                        amp_dtype: str) -> float:
     fundus_encoder.train(True)
@@ -61,7 +67,7 @@ def run_training_epoch(fundus_encoder, cmr_projector, logit_scale, loader,
     total_loss = 0.0
     total_items = 0
     for batch in loader:
-        # The participant-level sampler prevents false negatives from two eyes.
+        # One image per participant prevents within-participant false negatives.
         if len(set(batch["eid"].tolist())) != len(batch["eid"]):
             raise RuntimeError("Duplicate participant within an InfoNCE batch.")
         images = batch["image"].to(device)
@@ -69,7 +75,6 @@ def run_training_epoch(fundus_encoder, cmr_projector, logit_scale, loader,
         with autocast_context(device, amp_dtype):
             fundus_projection, _ = fundus_encoder(images)
             cmr_projection = F.normalize(cmr_projector(cmr), dim=-1)
-            temperature = logit_scale.exp().clamp(max=100.0).reciprocal()
             loss = symmetric_info_nce(
                 fundus_projection, cmr_projection, temperature)
             optimizer.zero_grad(set_to_none=True)
@@ -84,6 +89,9 @@ def run_training_epoch(fundus_encoder, cmr_projector, logit_scale, loader,
 def main() -> None:
     args = arguments()
     seed_everything(args.seed)
+    assert_manifest_schema(
+        args.manifest, ["fundus_path", "t1_available"],
+        allow_repeated_within_split=True)
     assert_disjoint_participants(
         args.manifest, args.external_validation_manifest)
     output = make_output_dir(args.output_dir, args.allow_existing)
@@ -112,41 +120,50 @@ def main() -> None:
     cmr_projector = nn.Sequential(
         nn.Linear(768, 512), nn.GELU(),
         nn.Linear(512, args.projection_dim))
-    logit_scale = nn.Parameter(torch.tensor(1.0 / args.temperature).log())
+    logit_scale = torch.tensor(1.0 / args.temperature, device=device).log()
     fundus_encoder.to(device)
     cmr_projector.to(device)
-    logit_scale = nn.Parameter(logit_scale.to(device))
-    optimizer = torch.optim.AdamW(
-        list(trainable_parameters([fundus_encoder, cmr_projector]))
-        + [logit_scale], lr=args.learning_rate,
-        weight_decay=args.weight_decay)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=max(args.epochs, 1))
+    backbone_parameters = [
+        parameter for parameter in fundus_encoder.backbone.parameters()
+        if parameter.requires_grad]
+    new_module_parameters = (
+        list(fundus_encoder.adapters.parameters())
+        + list(fundus_encoder.pool_norm.parameters())
+        + list(fundus_encoder.projection.parameters())
+        + list(cmr_projector.parameters()))
+    optimizer = torch.optim.AdamW([
+        {"name": "retfound_backbone", "params": backbone_parameters,
+         "lr": args.backbone_learning_rate},
+        {"name": "adapters_and_projection", "params": new_module_parameters,
+         "lr": args.new_module_learning_rate},
+    ], weight_decay=args.weight_decay)
+    scheduler = warmup_cosine_scheduler(
+        optimizer, args.warmup_epochs, args.epochs,
+        args.min_learning_rate_ratio)
 
     best = math.inf
     stale = 0
     for epoch in range(args.epochs):
         train_loss = run_training_epoch(
-            fundus_encoder, cmr_projector, logit_scale, train_loader,
+            fundus_encoder, cmr_projector, args.temperature, train_loader,
             train_sampler, device, optimizer, epoch, args.amp_dtype)
-        _, val_fundus, val_cmr, _, val_eye_counts = collect_participant_embeddings(
+        _, val_fundus, val_cmr, _ = collect_participant_embeddings(
             fundus_encoder, cmr_projector, validation_loader, device,
             args.amp_dtype)
         validation_metrics = alignment_metrics(
             val_fundus, val_cmr, logit_scale)
-        validation_metrics["mean_eyes_per_participant"] = float(
-            val_eye_counts.mean())
         validation_loss = validation_metrics["infonce"]
         print(f"epoch={epoch + 1} train_loss={train_loss:.6f} "
               f"val_loss={validation_loss:.6f} "
               f"val_f2c_top1={validation_metrics['fundus_to_cmr_top1']:.4f} "
-              f"logit_scale={logit_scale.exp().clamp(max=100).item():.4f}",
+              f"temperature={args.temperature:.4f}",
               flush=True)
         payload = dict(
             epoch=epoch + 1,
             fundus_encoder=fundus_encoder.state_dict(),
             cmr_projector=cmr_projector.state_dict(),
             logit_scale=logit_scale.detach().cpu(),
+            temperature=args.temperature,
             validation_loss=validation_loss,
             validation_metrics=validation_metrics,
             require_t1=args.require_t1,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Iterable
@@ -93,6 +94,37 @@ def assert_disjoint_participants(
             "both the development and external-validation manifests.")
 
 
+def assert_manifest_schema(
+    manifest: ManifestInput,
+    required_columns: Iterable[str],
+    *,
+    allow_repeated_within_split: bool,
+) -> None:
+    """Fail before training when columns or participant splits are invalid."""
+    frame = read_manifest(manifest)
+    required = {"eid", "split", *required_columns}
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise ValueError(
+            "Manifest is missing required columns: " + ", ".join(missing))
+    invalid_splits = sorted(set(frame["split"].dropna().astype(str))
+                            - {"train", "val", "test"})
+    if invalid_splits:
+        raise ValueError(
+            "Unknown manifest split values: " + ", ".join(invalid_splits))
+    participant_splits = frame.groupby("eid")["split"].nunique(dropna=False)
+    if (participant_splits > 1).any():
+        example = participant_splits[participant_splits > 1].index[0]
+        raise ValueError(
+            f"Participant {example} occurs in more than one data split.")
+    if not allow_repeated_within_split:
+        duplicated = frame.duplicated(["eid", "split"], keep=False)
+        if duplicated.any():
+            example = frame.loc[duplicated, "eid"].iloc[0]
+            raise ValueError(
+                f"Participant {example} has duplicate rows within one split.")
+
+
 def dump_run_config(output: Path, args, extra: dict | None = None) -> None:
     payload = dict(vars(args))
     if extra:
@@ -105,3 +137,27 @@ def trainable_parameters(modules: Iterable[torch.nn.Module]):
     for module in modules:
         yield from (parameter for parameter in module.parameters()
                     if parameter.requires_grad)
+
+
+def warmup_cosine_scheduler(
+    optimizer: torch.optim.Optimizer,
+    warmup_epochs: int,
+    total_epochs: int,
+    min_lr_ratio: float = 0.01,
+) -> torch.optim.lr_scheduler.LambdaLR:
+    """Linear warm-up followed by cosine decay to a fixed LR ratio."""
+    if warmup_epochs < 0 or warmup_epochs >= total_epochs:
+        raise ValueError("warmup_epochs must be in [0, total_epochs).")
+    if not 0 < min_lr_ratio <= 1:
+        raise ValueError("min_lr_ratio must be in (0, 1].")
+
+    def multiplier(epoch: int) -> float:
+        if warmup_epochs and epoch < warmup_epochs:
+            return (epoch + 1) / warmup_epochs
+        progress = (epoch - warmup_epochs) / max(
+            total_epochs - warmup_epochs - 1, 1)
+        progress = min(max(progress, 0.0), 1.0)
+        return min_lr_ratio + (1.0 - min_lr_ratio) * 0.5 * (
+            1.0 + math.cos(math.pi * progress))
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, multiplier)

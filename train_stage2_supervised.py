@@ -3,19 +3,20 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
-from collections import defaultdict
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from deepcad.data import FundusBinaryDataset
+from deepcad.config import parse_args_with_config
+from deepcad.data import FundusBinaryDataset, UniqueParticipantSampler
 from deepcad.models import FundusBinaryClassifier, RETFoundFundusEncoder
 from deepcad.training.common import (
-    autocast_context, choose_device, dump_run_config, make_output_dir, save_checkpoint,
-    trainable_parameters,
+    assert_manifest_schema, autocast_context, choose_device, dump_run_config,
+    make_output_dir, save_checkpoint, trainable_parameters,
 )
 from deepcad.utils import safe_auroc, seed_everything
 
@@ -27,27 +28,41 @@ def arguments() -> argparse.Namespace:
         "--initial-checkpoint", required=True,
         help="A Stage I alignment checkpoint or a preceding Stage II checkpoint")
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--development-step", choices=["sdpp", "shcc"],
+                        default="sdpp")
     parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--workers", type=int, default=4)
-    parser.add_argument("--learning-rate", type=float, default=1e-5)
-    parser.add_argument("--weight-decay", type=float, default=0.05)
-    parser.add_argument("--loss-type", choices=["paper_bce", "bce_pos_weight"],
-                        default="paper_bce")
-    parser.add_argument("--label-smoothing", type=float, default=0.1)
-    parser.add_argument("--positive-weight", type=float)
+    parser.add_argument("--learning-rate", type=float, default=1e-4)
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--loss-type", choices=["focal", "bce"], default="focal")
+    parser.add_argument("--focal-alpha", type=float, default=0.25)
+    parser.add_argument("--focal-gamma", type=float, default=2.0)
     parser.add_argument("--unfreeze-last-blocks", type=int, default=12)
-    parser.add_argument("--patience", type=int, default=8)
+    parser.add_argument("--patience", type=int, default=10)
+    parser.add_argument("--calibrate", action=argparse.BooleanOptionalAction,
+                        default=False,
+                        help="Fit temperature scaling on the validation split")
     parser.add_argument("--amp-dtype", choices=["bfloat16", "float16", "none"],
                         default="bfloat16")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--allow-existing", action="store_true")
-    return parser.parse_args()
+    return parse_args_with_config(parser)
 
 
-def run_epoch(model, loader, device, optimizer, positive_weight, amp_dtype,
-              loss_type, label_smoothing):
+def supervised_loss(logits, target, loss_type, focal_alpha, focal_gamma):
+    if loss_type == "bce":
+        return F.binary_cross_entropy_with_logits(logits, target)
+    bce = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
+    probability = torch.sigmoid(logits)
+    probability_t = probability * target + (1.0 - probability) * (1.0 - target)
+    alpha_t = focal_alpha * target + (1.0 - focal_alpha) * (1.0 - target)
+    return (alpha_t * (1.0 - probability_t).pow(focal_gamma) * bce).mean()
+
+
+def run_epoch(model, loader, device, optimizer, amp_dtype, loss_type,
+              focal_alpha, focal_gamma):
     training = optimizer is not None
     model.train(training)
     total_loss, total_items = 0.0, 0
@@ -58,14 +73,8 @@ def run_epoch(model, loader, device, optimizer, positive_weight, amp_dtype,
         with torch.set_grad_enabled(training), autocast_context(
                 device, amp_dtype):
             logits = model(images)
-            loss_target = target
-            if loss_type == "paper_bce":
-                loss_target = (target * (1.0 - label_smoothing)
-                               + (1.0 - target) * label_smoothing)
-            loss = F.binary_cross_entropy_with_logits(
-                logits, loss_target,
-                pos_weight=positive_weight if loss_type == "bce_pos_weight"
-                else None)
+            loss = supervised_loss(
+                logits, target, loss_type, focal_alpha, focal_gamma)
             if training:
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
@@ -77,24 +86,46 @@ def run_epoch(model, loader, device, optimizer, positive_weight, amp_dtype,
         eids.extend(int(eid) for eid in batch["eid"].tolist())
     labels_np = np.concatenate(labels)
     probabilities_np = np.concatenate(probabilities)
-    if not training:
-        labels_by_eid = {}
-        probabilities_by_eid = defaultdict(list)
-        for eid, label, probability in zip(eids, labels_np, probabilities_np):
-            if eid in labels_by_eid and labels_by_eid[eid] != int(label):
-                raise ValueError(f"Conflicting labels for EID {eid}")
-            labels_by_eid[eid] = int(label)
-            probabilities_by_eid[eid].append(float(probability))
-        participant_eids = sorted(labels_by_eid)
-        labels_np = np.asarray([labels_by_eid[eid] for eid in participant_eids])
-        probabilities_np = np.asarray([
-            np.mean(probabilities_by_eid[eid]) for eid in participant_eids])
+    if len(set(eids)) != len(eids):
+        raise RuntimeError("Each epoch must contain at most one image per participant.")
     return total_loss / max(total_items, 1), safe_auroc(labels_np, probabilities_np)
+
+
+@torch.no_grad()
+def collect_logits(model, loader, device, amp_dtype):
+    model.eval()
+    logits, labels = [], []
+    for batch in loader:
+        with autocast_context(device, amp_dtype):
+            output = model(batch["image"].to(device))
+        logits.append(output.float().cpu())
+        labels.append(batch["label"].float().cpu())
+    return torch.cat(logits), torch.cat(labels)
+
+
+def fit_temperature(logits: torch.Tensor, labels: torch.Tensor) -> float:
+    """Fit one positive scalar temperature on validation logits only."""
+    log_temperature = torch.nn.Parameter(torch.zeros(()))
+    optimizer = torch.optim.LBFGS(
+        [log_temperature], lr=0.1, max_iter=100, line_search_fn="strong_wolfe")
+
+    def closure():
+        optimizer.zero_grad()
+        temperature = log_temperature.exp().clamp(0.05, 20.0)
+        loss = F.binary_cross_entropy_with_logits(logits / temperature, labels)
+        loss.backward()
+        return loss
+
+    optimizer.step(closure)
+    return float(log_temperature.detach().exp().clamp(0.05, 20.0))
 
 
 def main() -> None:
     args = arguments()
     seed_everything(args.seed)
+    assert_manifest_schema(
+        args.manifest, ["fundus_path", "label"],
+        allow_repeated_within_split=True)
     output = make_output_dir(args.output_dir, args.allow_existing)
     device = choose_device(args.device)
     dump_run_config(output, args)
@@ -117,41 +148,35 @@ def main() -> None:
 
     train_dataset = FundusBinaryDataset(args.manifest, "train", True)
     validation_dataset = FundusBinaryDataset(args.manifest, "val", False)
+    train_sampler = UniqueParticipantSampler(train_dataset, seed=args.seed)
     train_loader = DataLoader(
-        train_dataset, batch_size=args.batch_size, shuffle=True,
+        train_dataset, batch_size=args.batch_size, sampler=train_sampler,
         num_workers=args.workers, pin_memory=device.type == "cuda")
     validation_loader = DataLoader(
         validation_dataset, batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=device.type == "cuda")
-    positive_weight = None
-    if args.loss_type == "bce_pos_weight":
-        if args.positive_weight is not None:
-            value = args.positive_weight
-        else:
-            labels = train_dataset.frame["label"].astype(int)
-            value = float((labels == 0).sum()) / max(int((labels == 1).sum()), 1)
-        positive_weight = torch.tensor(value, device=device)
     optimizer = torch.optim.AdamW(
         trainable_parameters([model]), lr=args.learning_rate,
         weight_decay=args.weight_decay)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=max(args.epochs, 1))
 
     best_auc = -math.inf
     stale = 0
     for epoch in range(args.epochs):
+        train_sampler.set_epoch(epoch)
         train_loss, train_auc = run_epoch(
-            model, train_loader, device, optimizer, positive_weight,
-            args.amp_dtype, args.loss_type, args.label_smoothing)
+            model, train_loader, device, optimizer, args.amp_dtype,
+            args.loss_type, args.focal_alpha, args.focal_gamma)
         validation_loss, validation_auc = run_epoch(
-            model, validation_loader, device, None, positive_weight,
-            args.amp_dtype, args.loss_type, args.label_smoothing)
+            model, validation_loader, device, None, args.amp_dtype,
+            args.loss_type, args.focal_alpha, args.focal_gamma)
         print(f"epoch={epoch + 1} train_loss={train_loss:.6f} "
               f"train_auc={train_auc:.4f} val_loss={validation_loss:.6f} "
               f"val_auc={validation_auc:.4f}", flush=True)
         payload = dict(
             epoch=epoch + 1, model=model.state_dict(),
-            encoder_config=encoder_config, validation_auc=validation_auc)
+            encoder_config=encoder_config, validation_auc=validation_auc,
+            development_step=args.development_step,
+            calibration_temperature=1.0)
         save_checkpoint(output / "last.pt", **payload)
         if np.isfinite(validation_auc) and validation_auc > best_auc:
             best_auc = validation_auc
@@ -159,9 +184,25 @@ def main() -> None:
             save_checkpoint(output / "best.pt", **payload)
         else:
             stale += 1
-        scheduler.step()
         if stale >= args.patience:
             break
+
+    if args.calibrate:
+        best_path = output / "best.pt"
+        if not best_path.exists():
+            raise RuntimeError("No finite-AUROC checkpoint is available to calibrate.")
+        best_checkpoint = torch.load(best_path, map_location="cpu")
+        model.load_state_dict(best_checkpoint["model"], strict=True)
+        validation_logits, validation_labels = collect_logits(
+            model, validation_loader, device, args.amp_dtype)
+        temperature = fit_temperature(validation_logits, validation_labels)
+        best_checkpoint["calibration_temperature"] = temperature
+        save_checkpoint(best_path, **best_checkpoint)
+        (output / "calibration.json").write_text(json.dumps({
+            "method": "temperature_scaling",
+            "source_split": "val",
+            "temperature": temperature,
+        }, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":
